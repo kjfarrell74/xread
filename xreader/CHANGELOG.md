@@ -1,0 +1,40 @@
+# Changelog
+
+All notable changes to XReader will be documented in this file. This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) where possible, though as a CLI tool, versioning may be informal in early stages.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and entries are grouped by version or date for unreleased changes.
+
+## [Unreleased]
+
+### Added
+- Initial project structure and core functionality for scraping tweet data from Nitter instances.
+- Integration with Google Gemini API for image description and text analysis (search terms and research questions).
+- Comprehensive documentation including README, USAGE, CONFIGURATION, and CONTRIBUTING guides.
+- Configuration files `.env` and `instructions.yaml` for customizable settings and prompts.
+- Directory structure for data storage (`scraped_data`) and debugging (`debug_output`).
+
+### Changed
+- N/A (Initial setup)
+
+### Fixed
+- N/A (Initial setup)
+
+### Removed
+- N/A (Initial setup)
+
+## [0.1.0] - 2025-05-03
+
+### Added
+- Initial commit of XReader with basic scraping functionality using Playwright and BeautifulSoup.
+- Support for interactive and command-line modes with commands like `scrape`, `list`, `stats`, and `delete`.
+- Data management for saving and loading scraped posts in JSON format.
+- Basic error handling and retry logic for network and API operations.
+
+### Notes
+- This version represents the starting point of the project as found in the initial codebase. Future changes will be logged above under "Unreleased" until a new version is defined.
+
+## About Versioning
+
+XReader is currently in an early development phase. Version numbers may not strictly follow Semantic Versioning until a stable release is reached. Each significant update or bundle of features/fixes will increment the version, with notes on breaking changes if any.
+
+For the latest updates or to contribute, refer to the project's [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md).

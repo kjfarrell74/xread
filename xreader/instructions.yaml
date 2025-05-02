@@ -1,0 +1,33 @@
+# Custom instructions for XReader
+# These settings can be reloaded during runtime with the 'reload_instructions' command
+
+# Image description settings
+image_description_prompt: >
+  Describe this image objectively. Focus on visible elements, text, and context.
+  If the image shows charts, graphs, or data, describe those details.
+  Avoid speculating about intent or making judgments not supported by the image.
+
+# Search term generation customization
+search_term_prompt_options:
+  # Set to true to prioritize fact-checking terms
+  prioritize_fact_checking: true
+  
+  # Set to true to include source credibility assessment terms
+  include_source_credibility: true
+  
+  # Minimum number of search terms to generate
+  min_terms: 8
+  
+  # Maximum number of search terms to generate
+  max_terms: 12
+
+# Research question generation customization
+research_question_options:
+  # Number of research questions to generate
+  question_count: 5
+  
+  # Set to true to include method/approach questions
+  include_methodology: true
+  
+  # Set to true to prioritize contextual/historical questions
+  prioritize_context: true
