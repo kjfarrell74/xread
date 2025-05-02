@@ -1,6 +1,27 @@
 #!/usr/bin/env python3
 """Asynchronous CLI tool to scrape tweet data from a Nitter instance, generate
-image descriptions and search terms using the Google Gemini API, and save the combined data."""
+image descriptions and search terms using the Google Gemini API, and save the combined data.
+
+This module provides a comprehensive pipeline for scraping social media content from
+Nitter instances (a Twitter alternative frontend), processing images with AI-generated
+descriptions, and creating search terms and research questions for further analysis.
+It leverages Playwright for browser automation, BeautifulSoup for HTML parsing, and
+Google's Gemini API for content generation.
+
+Key Features:
+- Asynchronous scraping of tweet threads including main posts and replies.
+- AI-powered image description generation with configurable limits.
+- Generation of search terms and research questions based on scraped text.
+- Data persistence in JSON format with metadata indexing.
+- Interactive CLI with command history and autocomplete.
+
+Usage Example:
+    # Scrape a specific tweet URL and process its content
+    $ python xread.py scrape https://nitter.net/user/status/123456789
+
+    # Run in interactive mode to input URLs or manage saved data
+    $ python xread.py
+"""
 
 import asyncio
 import logging
@@ -52,15 +73,34 @@ DEFAULT_NITTER_BASE_URL = "https://nitter.net"
 DEFAULT_MAX_IMAGE_DOWNLOADS = 5
 DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_RETRY_DELAY = 2
-PLAYWRIGHT_PAGE_LOAD_TIMEOUT = 35000  # ms
-PLAYWRIGHT_SELECTOR_TIMEOUT = 7000    # ms
-PLAYWRIGHT_POST_LOAD_DELAY = 3000     # ms
-IMAGE_DOWNLOAD_TIMEOUT = 10           # seconds
 MAX_IMAGE_SIZE = 10 * 1024 * 1024     # 10MB
 NA_PLACEHOLDER = "N/A"
 PAGE_READY_SELECTOR = "div.container"
-DEBUG_DIR = "debug_output"
-HISTORY_FILE = ".xread_history"
+
+class TimeoutConstants:
+    """Constants for various timeout durations used in the application."""
+    PLAYWRIGHT_PAGE_LOAD_MS = 35000
+    PLAYWRIGHT_SELECTOR_MS = 7000
+    PLAYWRIGHT_POST_LOAD_DELAY_MS = 3000
+    IMAGE_DOWNLOAD_SECONDS = 10
+
+class FileFormats:
+    """Constants for file and directory naming conventions."""
+    DEBUG_DIR = "debug_output"
+    HISTORY_FILE = ".xread_history"
+    INDEX_FILE = "index.json"
+    CACHE_DIR = "cache"
+    POST_PREFIX = "post_"
+    JSON_EXTENSION = ".json"
+    FAILED_PARSE_PREFIX = "failed_parse_"
+    HTML_EXTENSION = ".html"
+
+class ErrorMessages:
+    """Constants for error message strings."""
+    API_KEY_MISSING = "GEMINI_API_KEY required if MAX_IMAGE_DOWNLOADS_PER_RUN > 0 or TEXT_ANALYSIS_MODEL is set"
+    BROWSER_NOT_LAUNCHED = "Browser not launched."
+    FETCH_FAILED = "Fetch failed."
+    PARSE_FAILED = "Parse failed."
 
 SEARCH_TERM_PROMPT = """
 Analyze the following text content scraped from a social media thread (main post
@@ -158,7 +198,7 @@ try:
             "GEMINI_API_KEY required if MAX_IMAGE_DOWNLOADS_PER_RUN > 0 or TEXT_ANALYSIS_MODEL is set"
         )
     if settings.save_failed_html:
-        Path(DEBUG_DIR).mkdir(parents=True, exist_ok=True)
+        Path(FileFormats.DEBUG_DIR).mkdir(parents=True, exist_ok=True)
 except (ValidationError, ValueError) as e:
     logger.error(f"Configuration error: {e}")
     typer.echo(f"Configuration error: {e}", err=True)
@@ -252,21 +292,17 @@ class ScrapedData:
 
     def get_full_text(self) -> str:
         """Combine main post text and reply texts into a single string."""
-        full_text = (
-            f"Main Post (@{self.main_post.username}):\n"
-            f"{self.main_post.text}\n\n"
-        )
+        parts = [f"Main Post (@{self.main_post.username}):\n{self.main_post.text}\n\n"]
+        
         if self.replies:
-            full_text += "Replies:\n"
+            parts.append("Replies:\n")
             for i, reply in enumerate(self.replies, start=1):
-                # Filter out duplicate consecutive replies (simple check)
+                # Filter out duplicate consecutive replies
                 if i > 1 and reply.text == self.replies[i-2].text and reply.username == self.replies[i-2].username:
                     continue
-                full_text += (
-                    f"--- Reply {i} (@{reply.username}) ---\n"
-                    f"{reply.text}\n"
-                )
-        return full_text.strip()
+                parts.append(f"--- Reply {i} (@{reply.username}) ---\n{reply.text}\n")
+        
+        return "".join(parts).strip()
 
 
 def load_instructions(filepath: Path = Path("instructions.yaml")) -> Dict[str, Any]:
@@ -477,7 +513,7 @@ class NitterScraper:
         """Use Playwright to fetch page HTML content."""
         logger.info(f"Fetching HTML from {url}")
         try:
-            response = await page.goto(url, wait_until='networkidle', timeout=PLAYWRIGHT_PAGE_LOAD_TIMEOUT)
+            response = await page.goto(url, wait_until='networkidle', timeout=TimeoutConstants.PLAYWRIGHT_PAGE_LOAD_MS)
             if not response:
                 logger.warning(f"No response for {url}")
                 return None
@@ -489,11 +525,11 @@ class NitterScraper:
                 if response.status >= 500:
                     return None
             try:
-                await page.wait_for_selector(PAGE_READY_SELECTOR, state='visible', timeout=PLAYWRIGHT_SELECTOR_TIMEOUT)
+                await page.wait_for_selector(PAGE_READY_SELECTOR, state='visible', timeout=TimeoutConstants.PLAYWRIGHT_SELECTOR_MS)
                 logger.info(f"Found '{PAGE_READY_SELECTOR}'")
             except PlaywrightTimeoutError:
                 logger.warning(f"'{PAGE_READY_SELECTOR}' not found/visible. Proceeding anyway.")
-            await page.wait_for_timeout(PLAYWRIGHT_POST_LOAD_DELAY)
+            await page.wait_for_timeout(TimeoutConstants.PLAYWRIGHT_POST_LOAD_DELAY_MS)
             html_content = await page.content()
             if not html_content:
                 logger.warning(f"Empty HTML from {url}")
@@ -604,12 +640,36 @@ class GeminiApiError(Exception):
     """Custom exception for Gemini API errors."""
     pass
 
+class RateLimiter:
+    """Manages API rate limits to prevent throttling or bans."""
+    def __init__(self, requests_per_minute: int = 60):
+        self.requests_per_minute = requests_per_minute
+        self.request_times: List[float] = []
+        self._lock = asyncio.Lock()
+        
+    async def acquire(self) -> None:
+        """Wait if necessary to comply with rate limits."""
+        async with self._lock:
+            now = time.time()
+            # Remove timestamps older than 1 minute
+            self.request_times = [t for t in self.request_times if now - t < 60]
+            
+            if len(self.request_times) >= self.requests_per_minute:
+                oldest = min(self.request_times)
+                sleep_time = max(0, 60 - (now - oldest))
+                if sleep_time > 0:
+                    logger.info(f"Rate limit: waiting {sleep_time:.2f}s")
+                    await asyncio.sleep(sleep_time)
+                    
+            self.request_times.append(time.time())
+
 class GeminiProcessor:
     """Manages Gemini API interactions for image description and text analysis."""
     def __init__(self, data_manager: DataManager):
         self.image_model: Optional[genai.GenerativeModel] = None
         self.text_model: Optional[genai.GenerativeModel] = None
         self.api_key_valid = False
+        self.rate_limiter = RateLimiter(requests_per_minute=60)
         if settings.gemini_api_key:
             try:
                 genai.configure(api_key=settings.gemini_api_key)
@@ -639,42 +699,26 @@ class GeminiProcessor:
         self.downloaded_count = 0
         self.data_manager = data_manager
 
-    async def process_images_for_post(self, post: Post, session: aiohttp.ClientSession) -> None:
-        """Process images in the main post to generate descriptions."""
+    async def process_images(self, item: Post, session: aiohttp.ClientSession, item_type: str = "post") -> None:
+        """Process images in a post or reply to generate descriptions.
+        
+        Args:
+            item: The Post object containing images to process.
+            session: The aiohttp ClientSession for downloading images.
+            item_type: String indicating if this is a 'post' or 'reply' (default: 'post').
+        """
         if not self.api_key_valid or not self.image_model or settings.max_image_downloads <= 0:
             return
-        if not post.images:
+        if not item.images:
             return
         remaining = self.max_downloads - self.downloaded_count
-        logger.info(f"Processing up to {remaining} images for post {post.status_id or 'N/A'}...")
+        logger.info(f"Processing up to {remaining} images for {item_type} {item.status_id or 'N/A'}...")
         tasks = []
-        for img in post.images:
+        for img in item.images:
             if self.downloaded_count >= self.max_downloads:
                 break
             tasks.append(asyncio.create_task(self._process_single_image(session, img)))
-        for img in post.images[len(tasks):]:
-            img.description = "Skipped (limit reached)"
-        if tasks:
-            await asyncio.gather(*tasks)
-
-    async def process_images_for_reply(self, reply: Post, session: aiohttp.ClientSession) -> None:
-        """Process images in a reply if download limit not reached."""
-        if (
-            not self.api_key_valid or not self.image_model or
-            settings.max_image_downloads <= 0 or
-            self.downloaded_count >= self.max_downloads
-        ):
-            return
-        if not reply.images:
-            return
-        remaining = self.max_downloads - self.downloaded_count
-        logger.info(f"Processing up to {remaining} images for reply {reply.status_id or 'N/A'}...")
-        tasks = []
-        for img in reply.images:
-            if self.downloaded_count >= self.max_downloads:
-                break
-            tasks.append(asyncio.create_task(self._process_single_image(session, img)))
-        for img in reply.images[len(tasks):]:
+        for img in item.images[len(tasks):]:
             img.description = "Skipped (limit reached)"
         if tasks:
             await asyncio.gather(*tasks)
@@ -682,9 +726,6 @@ class GeminiProcessor:
     @with_retry()
     async def _process_single_image(self, session: aiohttp.ClientSession, image: Image) -> None:
         """Download an image and generate its description via the Gemini API."""
-        if not self.api_key_valid or not self.image_model or self.downloaded_count >= self.max_downloads:
-            image.description = image.description or "Skipped (API/Limit issue before processing)"
-            return
         temp_file_path = None
         cache_key = hashlib.sha256(image.url.encode()).hexdigest()
         try:
@@ -696,7 +737,7 @@ class GeminiProcessor:
                 return
 
             logger.info(f"Downloading image: {image.url}")
-            async with asyncio.timeout(IMAGE_DOWNLOAD_TIMEOUT):
+            async with asyncio.timeout(TimeoutConstants.IMAGE_DOWNLOAD_SECONDS):
                 async with session.get(image.url) as resp:
                     resp.raise_for_status()
                     content = await resp.read()
@@ -714,6 +755,7 @@ class GeminiProcessor:
             with tempfile.NamedTemporaryFile(delete=False, suffix=temp_suff, dir=temp_dir) as tmpf:
                 tmpf.write(content)
                 temp_file_path = Path(tmpf.name)
+            await self.rate_limiter.acquire()
             image.description = await self._describe_image_native(temp_file_path, content)
             self.downloaded_count += 1
             logger.info(f"Described {image.url}. Image count: {self.downloaded_count}/{self.max_downloads}")
@@ -892,7 +934,7 @@ class ScraperPipeline:
         if not settings.save_failed_html or not html:
             return
         sid_val = sid or f"unknown_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
-        fpath = Path(DEBUG_DIR) / f"failed_parse_{sid_val}.html"
+        fpath = Path(FileFormats.DEBUG_DIR) / f"{FileFormats.FAILED_PARSE_PREFIX}{sid_val}{FileFormats.HTML_EXTENSION}"
         fpath.parent.mkdir(parents=True, exist_ok=True)
         try:
             async with aiofiles.open(fpath, 'w', encoding='utf-8') as f:
@@ -901,109 +943,128 @@ class ScraperPipeline:
         except Exception as e:
             logger.error(f"Could not save failed HTML to {fpath}: {e}")
 
+    async def _prepare_url(self, url: str) -> tuple[str, Optional[str]]:
+        """Prepare and normalize the URL for scraping, extracting the status ID."""
+        normalized_url = self.scraper.normalize_url(url)
+        sid_match = re.search(settings.status_id_regex, normalized_url)
+        sid = sid_match.group(1) if sid_match else None
+        if not sid:
+            raise ValueError("Status ID extraction failed.")
+        return normalized_url, sid
+
+    async def _fetch_and_parse(self, normalized_url: str, sid: str) -> tuple[Optional[str], Optional[ScrapedData]]:
+        """Fetch HTML content and parse it into structured data."""
+        page = await self.browser_manager.new_page()
+        try:
+            html_content = await self.scraper.fetch_html(page, normalized_url)
+            if not html_content:
+                logger.error(f"Fetch failed for {normalized_url}")
+                typer.echo(f"Error: {ErrorMessages.FETCH_FAILED}", err=True)
+                return None, None
+
+            scraped_data = self.scraper.parse_html(html_content)
+            if not scraped_data:
+                logger.error(f"Parse failed for {normalized_url}")
+                typer.echo(f"Error: {ErrorMessages.PARSE_FAILED}", err=True)
+                await self._save_failed_html(sid, html_content)
+                return html_content, None
+            return html_content, scraped_data
+        finally:
+            try:
+                await page.close()
+            except Exception as e:
+                logger.warning(f"Error closing page: {e}")
+
+    async def _process_media(self, scraped_data: ScrapedData, sid: str) -> None:
+        """Process images in the scraped data if conditions are met."""
+        if not (
+            self.gemini_processor.api_key_valid and 
+            self.gemini_processor.image_model and 
+            settings.max_image_downloads > 0
+        ):
+            logger.info("Image processing skipped (API invalid, model missing, or limit 0).")
+            return
+        
+        async with aiohttp.ClientSession() as session:
+            logger.info(f"Processing images for post {sid}...")
+            await self.gemini_processor.process_images(scraped_data.main_post, session, "post")
+            for reply in scraped_data.replies:
+                if self.gemini_processor.downloaded_count >= settings.max_image_downloads:
+                    break
+                await self.gemini_processor.process_images(reply, session, "reply")
+
+    async def _generate_search_terms(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
+        """Generate search terms based on scraped text content."""
+        if not (self.gemini_processor.api_key_valid and self.gemini_processor.text_model):
+            logger.info("Search term generation skipped (API invalid or text model missing).")
+            return "Skipped: API invalid or text model missing."
+
+        logger.info(f"Generating search terms for post {sid}...")
+        full_text = scraped_data.get_full_text()
+        if full_text.strip():
+            prompt = SEARCH_TERM_PROMPT.format(scraped_text=full_text)
+            search_terms = await self.gemini_processor.generate_text_native(
+                prompt, f"Search Term Generation (Post ID: {sid})"
+            )
+            if search_terms and (search_terms.startswith("Error:") or search_terms.startswith("Warning:")):
+                logger.warning(f"Gemini issue generating search terms for {sid}: {search_terms}")
+            return search_terms
+        logger.warning(f"Post {sid} has no text content for search term generation.")
+        return "Info: No text content provided for analysis."
+
+    async def _generate_research_questions(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
+        """Generate research questions based on scraped text content."""
+        if not (self.gemini_processor.api_key_valid and self.gemini_processor.text_model):
+            logger.info("Research questions generation skipped (API invalid or text model missing).")
+            return "Skipped: API invalid or text model missing."
+
+        logger.info(f"Generating research questions for post {sid}...")
+        full_text = scraped_data.get_full_text()
+        if full_text.strip():
+            prompt = RESEARCH_QUESTIONS_PROMPT.format(scraped_text=full_text)
+            research_questions = await self.gemini_processor.generate_text_native(
+                prompt, f"Research Questions Generation (Post ID: {sid})"
+            )
+            if research_questions and (research_questions.startswith("Error:") or research_questions.startswith("Warning:")):
+                logger.warning(f"Gemini issue generating research questions for {sid}: {research_questions}")
+            return research_questions
+        logger.warning(f"Post {sid} has no text content for research questions generation.")
+        return "Info: No text content provided for analysis."
+
+    async def _save_results(self, scraped_data: ScrapedData, url: str, search_terms: Optional[str], research_questions: Optional[str], sid: str) -> None:
+        """Save the scraped data along with generated content."""
+        saved_sid = await self.data_manager.save(scraped_data, url, search_terms, research_questions)
+        if saved_sid:
+            logger.info(f"Successfully saved post {saved_sid}")
+            typer.echo(f"Success: Saved post {saved_sid}.")
+        else:
+            if sid and sid not in self.data_manager.seen:
+                typer.echo(f"Error: Failed to save data for post {sid}.", err=True)
+
     async def run(self, url: str) -> None:
         """Run the full pipeline: scrape, process images, generate terms, and save."""
         await self.initialize_browser()
         logger.info(f"Starting pipeline for {url}")
         self.gemini_processor.downloaded_count = 0
-        page: Optional[Page] = None
-        sid: Optional[str] = None
-        html_content: Optional[str] = None
-        scraped_data: Optional[ScrapedData] = None
-        search_terms: Optional[str] = None
-        research_questions: Optional[str] = None
-
+        
         try:
-            normalized_url = self.scraper.normalize_url(url)
-            sid_match = re.search(settings.status_id_regex, normalized_url)
-            sid = sid_match.group(1) if sid_match else None
-            if not sid:
-                raise ValueError("Status ID extraction failed.")
-
+            normalized_url, sid = await self._prepare_url(url)
             if sid in self.data_manager.seen:
                 logger.info(f"Post {sid} seen. Skipping.")
                 typer.echo(f"Skipped (already saved): {sid}")
                 return
-
-            page = await self.browser_manager.new_page()
-            html_content = await self.scraper.fetch_html(page, normalized_url)
-            if not html_content:
-                logger.error(f"Fetch failed for {normalized_url}")
-                typer.echo("Error: Fetch failed.", err=True)
-                return
-
-            scraped_data = self.scraper.parse_html(html_content)
+                
+            html_content, scraped_data = await self._fetch_and_parse(normalized_url, sid)
             if not scraped_data:
-                logger.error(f"Parse failed for {normalized_url}")
-                typer.echo("Error: Parse failed.", err=True)
-                await self._save_failed_html(sid, html_content)
+                if html_content:
+                    await self._save_failed_html(sid, html_content)
                 return
-
-            # --- Image Processing ---
-            if (
-                self.gemini_processor.api_key_valid and
-                self.gemini_processor.image_model and
-                settings.max_image_downloads > 0
-            ):
-                async with aiohttp.ClientSession() as session:
-                    logger.info(f"Processing images for post {sid}...")
-                    await self.gemini_processor.process_images_for_post(scraped_data.main_post, session)
-                    for reply in scraped_data.replies:
-                        if self.gemini_processor.downloaded_count >= settings.max_image_downloads:
-                            break
-                        await self.gemini_processor.process_images_for_reply(reply, session)
-            else:
-                logger.info("Image processing skipped (API invalid, model missing, or limit 0).")
-
-            # --- Search Term Generation ---
-            if self.gemini_processor.api_key_valid and self.gemini_processor.text_model:
-                logger.info(f"Generating search terms for post {sid}...")
-                full_text = scraped_data.get_full_text()
-                if full_text.strip():
-                    prompt = SEARCH_TERM_PROMPT.format(scraped_text=full_text)
-                    search_terms = await self.gemini_processor.generate_text_native(
-                        prompt, f"Search Term Generation (Post ID: {sid})"
-                    )
-                    if search_terms and (
-                        search_terms.startswith("Error:") or search_terms.startswith("Warning:")
-                    ):
-                        logger.warning(f"Gemini issue generating search terms for {sid}: {search_terms}")
-                else:
-                    logger.warning(f"Post {sid} has no text content for search term generation.")
-                    search_terms = "Info: No text content provided for analysis."
-            else:
-                logger.info("Search term generation skipped (API invalid or text model missing).")
-                search_terms = "Skipped: API invalid or text model missing."
-
-            # --- Research Questions Generation ---
-            if self.gemini_processor.api_key_valid and self.gemini_processor.text_model:
-                logger.info(f"Generating research questions for post {sid}...")
-                full_text = scraped_data.get_full_text()
-                if full_text.strip():
-                    prompt = RESEARCH_QUESTIONS_PROMPT.format(scraped_text=full_text)
-                    research_questions = await self.gemini_processor.generate_text_native(
-                        prompt, f"Research Questions Generation (Post ID: {sid})"
-                    )
-                    if research_questions and (
-                        research_questions.startswith("Error:") or research_questions.startswith("Warning:")
-                    ):
-                        logger.warning(f"Gemini issue generating research questions for {sid}: {research_questions}")
-                else:
-                    logger.warning(f"Post {sid} has no text content for research questions generation.")
-                    research_questions = "Info: No text content provided for analysis."
-            else:
-                logger.info("Research questions generation skipped (API invalid or text model missing).")
-                research_questions = "Skipped: API invalid or text model missing."
-
-            # --- Save Data (including search terms and research questions) ---
-            saved_sid = await self.data_manager.save(scraped_data, url, search_terms, research_questions)
-            if saved_sid:
-                logger.info(f"Successfully saved post {saved_sid}")
-                typer.echo(f"Success: Saved post {saved_sid}.")
-            else:
-                if sid and sid not in self.data_manager.seen:
-                    typer.echo(f"Error: Failed to save data for post {sid}.", err=True)
-
+                
+            await self._process_media(scraped_data, sid)
+            search_terms = await self._generate_search_terms(scraped_data, sid)
+            research_questions = await self._generate_research_questions(scraped_data, sid)
+            
+            await self._save_results(scraped_data, url, search_terms, research_questions, sid)
         except ValueError as e:
             logger.error(f"URL/Input error: {e}")
             typer.echo(f"Error: {e}", err=True)
@@ -1012,13 +1073,6 @@ class ScraperPipeline:
             typer.echo(f"Error: An unexpected error occurred: {e}", err=True)
             if html_content and scraped_data is None:
                 await self._save_failed_html(sid, html_content)
-        finally:
-            if page:
-                try:
-                    await page.close()
-                except Exception as e:
-                    logger.warning(f"Error closing page: {e}")
-            # Browser is closed in async_main or after interactive loop.
 
 
 # --- CLI Application ---
@@ -1035,7 +1089,7 @@ async def run_interactive_mode_async(pipeline: ScraperPipeline) -> None:
         'scrape', 'list', 'stats', 'delete', 'help', 'quit', 'exit', 'reload_instructions'
     ]
     command_completer = WordCompleter(commands, ignore_case=True)
-    history = FileHistory(str(settings.data_dir / HISTORY_FILE))
+    history = FileHistory(str(settings.data_dir / FileFormats.HISTORY_FILE))
     session = PromptSession(
         history=history,
         completer=command_completer,
