@@ -12,3 +12,4 @@ prompt-toolkit>=3.0.0,<4.0.0
 PyYAML>=6.0.0,<7.0.0
 aiofiles>=0.8.0,<1.0.0
 google-generativeai>=0.7.0,<1.0.0
+anthropic>=0.25.0,<1.0.0

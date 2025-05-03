@@ -1,6 +1,7 @@
 """Data management functionality for saving and loading scraped data in xread."""
 
 import json
+import sqlite3  # Added for database operations
 from pathlib import Path
 from typing import Optional, Dict, List, Set, Any
 import aiofiles
@@ -10,22 +11,87 @@ from xread.settings import settings, logger
 from xread.models import ScrapedData, Post, Image
 
 class DataManager:
-    """Handles saving and loading scraped data to/from JSON files."""
+    """Handles saving and loading scraped data to/from the database."""
     def __init__(self):
         self.data_dir = settings.data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.index_file = self.data_dir / 'index.json'
-        self.cache_dir = self.data_dir / 'cache'
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_file = self.cache_dir / 'image_descriptions.json'
-        self.image_cache: Dict[str, str] = {}
-        self.index: Dict[str, Any] = {'posts': {}, 'latest_scrape': None}
+        self.db_path = self.data_dir / 'xread_data.db'  # Define DB path
+        self.conn: Optional[sqlite3.Connection] = None
+        self.image_cache: Dict[str, str] = {}  # Keep for in-memory, but DB is source
         self.seen: Set[str] = set()
 
     async def initialize(self) -> None:
-        """Initialize the data manager by loading index and cache."""
-        await self._load_index()
-        await self._load_cache()
+        """Initialize the data manager by connecting to DB and creating tables."""
+        self.conn = self._connect_db()
+        self._initialize_db()
+        await self._load_seen_ids()
+        await self._load_cache()  # Load cache from DB into memory
+
+    def _connect_db(self) -> sqlite3.Connection:
+        """Establish SQLite connection."""
+        try:
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)  # check_same_thread=False needed for async usage
+            conn.row_factory = sqlite3.Row  # Access columns by name
+            logger.info(f"Connected to SQLite database: {self.db_path}")
+            return conn
+        except sqlite3.Error as e:
+            logger.error(f"Error connecting to SQLite database: {e}")
+            raise  # Propagate error
+
+    def _initialize_db(self) -> None:
+        """Create database tables if they don't exist."""
+        if not self.conn:
+            raise ConnectionError("Database not connected.")
+        cursor = self.conn.cursor()
+        try:
+            # Main posts table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS posts (
+                    status_id TEXT PRIMARY KEY,
+                    author TEXT,
+                    username TEXT,
+                    text TEXT,
+                    date TEXT,
+                    permalink TEXT UNIQUE,
+                    images_json TEXT,
+                    original_url TEXT,
+                    scrape_date TEXT,
+                    suggested_search_terms TEXT,
+                    research_questions TEXT
+                )
+            ''')
+
+            # Replies table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS replies (
+                    reply_db_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    post_status_id TEXT NOT NULL,
+                    status_id TEXT UNIQUE,
+                    user TEXT,
+                    username TEXT,
+                    text TEXT,
+                    date TEXT,
+                    permalink TEXT UNIQUE,
+                    images_json TEXT,
+                    FOREIGN KEY (post_status_id) REFERENCES posts (status_id) ON DELETE CASCADE
+                )
+            ''')
+
+            # Image cache table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS image_cache (
+                    url_hash TEXT PRIMARY KEY,
+                    description TEXT,
+                    cached_at TEXT
+                )
+            ''')
+            self.conn.commit()
+            logger.info("Database tables ensured.")
+        except sqlite3.Error as e:
+            logger.error(f"Error initializing database tables: {e}")
+            self.conn.rollback()
+        finally:
+            cursor.close()
 
     async def _load_index(self) -> None:
         if self.index_file.exists():
@@ -37,21 +103,35 @@ class DataManager:
                 self.index = {'posts': {}, 'latest_scrape': None}
         self.seen = set(self.index.get('posts', {}).keys())
 
-    async def _load_cache(self) -> None:
-        if self.cache_file.exists():
-            try:
-                async with aiofiles.open(self.cache_file, mode='r', encoding='utf-8') as f:
-                    self.image_cache = json.loads(await f.read())
-            except (json.JSONDecodeError, IOError) as e:
-                logger.error(f"Error loading image cache: {e}. Starting empty.")
-                self.image_cache = {}
-
-    async def _save_index(self) -> None:
+    async def _load_seen_ids(self) -> None:
+        """Load already processed post IDs from the database."""
+        if not self.conn: return
+        cursor = self.conn.cursor()
         try:
-            async with aiofiles.open(self.index_file, mode='w', encoding='utf-8') as f:
-                await f.write(json.dumps(self.index, indent=2))
-        except IOError as e:
-            logger.error(f"Error saving index.json: {e}")
+            cursor.execute("SELECT status_id FROM posts")
+            rows = cursor.fetchall()
+            self.seen = {row['status_id'] for row in rows}
+            logger.info(f"Loaded {len(self.seen)} seen post IDs from database.")
+        except sqlite3.Error as e:
+            logger.error(f"Error loading seen IDs from database: {e}")
+        finally:
+            cursor.close()
+
+    async def _load_cache(self) -> None:
+        """Load image description cache from the database."""
+        if not self.conn: return
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT url_hash, description FROM image_cache")
+            rows = cursor.fetchall()
+            self.image_cache = {row['url_hash']: row['description'] for row in rows}
+            logger.info(f"Loaded {len(self.image_cache)} items into image cache from database.")
+        except sqlite3.Error as e:
+            logger.error(f"Error loading image cache from database: {e}")
+        finally:
+            cursor.close()
+
+    # Removed _save_index as it's no longer needed with DB storage
 
     async def _save_cache(self) -> None:
         try:
@@ -67,7 +147,11 @@ class DataManager:
         search_terms: Optional[str] = None,
         research_questions: Optional[str] = None,
     ) -> Optional[str]:
-        """Save scraped data, search terms, and research questions to a JSON file."""
+        """Save scraped data to the database."""
+        if not self.conn:
+            logger.error("Database not connected. Cannot save.")
+            return None
+
         sid = data.main_post.status_id
         if not sid:
             first_reply_sid = next((r.status_id for r in data.replies if r.status_id), None)
@@ -75,105 +159,172 @@ class DataManager:
                 sid = first_reply_sid
                 logger.warning(f"Main post missing ID, using first reply ID: {sid}")
             else:
-                logger.error("No status ID found in main post or replies. Skipping save.")
+                logger.error("No status ID found. Skipping save.")
                 return None
 
         if sid in self.seen:
             logger.info(f"Post {sid} already saved. Skipping.")
             return None
 
-        meta = {
-            'original_url': original_url,
-            'author': data.main_post.username,
-            'scrape_date': datetime.now(timezone.utc).isoformat(),
-            'replies_count': len(data.replies)
-        }
-        self.index['posts'][sid] = meta
-        self.index['latest_scrape'] = meta['scrape_date']
-        await self._save_index()
-
-        post_file = self.data_dir / f'post_{sid}.json'
-        final_output = {
-            'main_post': data.main_post.to_dict(),
-            'replies': [r.to_dict() for r in data.replies],
-            'suggested_search_terms': search_terms,
-            'research_questions': research_questions
-        }
+        cursor = self.conn.cursor()
         try:
-            post_json = json.dumps(final_output, indent=2, ensure_ascii=False)
-            async with aiofiles.open(post_file, mode='w', encoding='utf-8') as f:
-                await f.write(post_json)
+            scrape_date = datetime.now(timezone.utc).isoformat()
+            images_json = json.dumps([img.__dict__ for img in data.main_post.images])
+            cursor.execute(
+                "INSERT INTO posts (status_id, author, username, text, date, permalink, images_json, original_url, scrape_date, suggested_search_terms, research_questions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (sid, data.main_post.user, data.main_post.username, data.main_post.text, data.main_post.date,
+                 data.main_post.permalink, images_json, original_url, scrape_date, search_terms, research_questions)
+            )
+
+            for reply in data.replies:
+                reply_images_json = json.dumps([img.__dict__ for img in reply.images])
+                cursor.execute(
+                    "INSERT INTO replies (post_status_id, status_id, user, username, text, date, permalink, images_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (sid, reply.status_id, reply.user, reply.username, reply.text, reply.date,
+                     reply.permalink, reply_images_json)
+                )
+
+            self.conn.commit()
             self.seen.add(sid)
-            logger.info(f"Saved post {sid} to {post_file}")
+            logger.info(f"Saved post {sid} to database.")
             return sid
-        except (IOError, TypeError) as e:
-            logger.error(f"Error saving post {post_file}: {e}")
-            if sid in self.index['posts']:
-                del self.index['posts'][sid]
-                await self._save_index()
+        except sqlite3.IntegrityError as e:
+            logger.warning(f"Integrity error saving post {sid}: {e}")
+            self.conn.rollback()
+            return None
+        except sqlite3.Error as e:
+            logger.error(f"Error saving post {sid} to database: {e}")
+            self.conn.rollback()
             return None
 
     async def load_post_data(self, status_id: str) -> Optional[ScrapedData]:
-        """Load the scraped data (main_post, replies) from a saved JSON post file."""
-        post_file = self.data_dir / f'post_{status_id}.json'
-        if not post_file.exists():
-            logger.warning(f"Post file not found for ID: {status_id}")
+        """Load scraped data from the database for a given status_id."""
+        if not self.conn:
+            logger.error("Database not connected. Cannot load data.")
             return None
+        cursor = self.conn.cursor()
         try:
-            async with aiofiles.open(post_file, mode='r', encoding='utf-8') as f:
-                full_content = json.loads(await f.read())
-            main_post_dict = full_content.get('main_post')
-            replies_list_dict = full_content.get('replies', [])
-            if not main_post_dict:
-                logger.error(f"Main post data missing in file {post_file}")
+            cursor.execute("SELECT * FROM posts WHERE status_id = ?", (status_id,))
+            main_post_row = cursor.fetchone()
+            if not main_post_row:
+                logger.warning(f"Post not found in database for ID: {status_id}")
                 return None
-            main_post = Post(**main_post_dict)
-            main_post.images = [
-                Image(**img_dict) for img_dict in main_post_dict.get('images', []) if isinstance(img_dict, dict)
-            ]
+
+            main_post_images = [Image(**img_dict) for img_dict in json.loads(main_post_row['images_json'] or '[]')]
+            main_post = Post(
+                status_id=main_post_row['status_id'],
+                user=main_post_row['user'],
+                username=main_post_row['username'],
+                text=main_post_row['text'],
+                date=main_post_row['date'],
+                permalink=main_post_row['permalink'],
+                images=main_post_images
+            )
+
+            cursor.execute("SELECT * FROM replies WHERE post_status_id = ?", (status_id,))
+            reply_rows = cursor.fetchall()
             replies: List[Post] = []
-            for reply_dict in replies_list_dict:
-                if isinstance(reply_dict, dict):
-                    reply = Post(**reply_dict)
-                    reply.images = [
-                        Image(**img_dict) for img_dict in reply_dict.get('images', []) if isinstance(img_dict, dict)
-                    ]
-                    replies.append(reply)
-                else:
-                    logger.warning(f"Skipping malformed reply data in file {post_file}")
-            logger.info(f"Loaded scraped data for ID: {status_id}")
+            for reply_row in reply_rows:
+                reply_images = [Image(**img_dict) for img_dict in json.loads(reply_row['images_json'] or '[]')]
+                reply = Post(
+                    status_id=reply_row['status_id'],
+                    user=reply_row['user'],
+                    username=reply_row['username'],
+                    text=reply_row['text'],
+                    date=reply_row['date'],
+                    permalink=reply_row['permalink'],
+                    images=reply_images
+                )
+                replies.append(reply)
+
+            logger.info(f"Loaded scraped data from DB for ID: {status_id}")
             return ScrapedData(main_post=main_post, replies=replies)
-        except (json.JSONDecodeError, IOError) as e:
-            logger.error(f"Error loading/decoding {post_file}: {e}")
+        except sqlite3.Error as e:
+            logger.error(f"Error loading post {status_id} from database: {e}")
             return None
-        except Exception as e:
-            logger.exception(f"Unexpected error reconstructing data for {post_file}: {e}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding JSON for post {status_id} from database: {e}")
             return None
+        finally:
+            cursor.close()
 
     def list_meta(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """List saved post metadata, sorted by scrape date (descending)."""
-        posts = [{'status_id': sid, **meta} for sid, meta in self.index.get('posts', {}).items()]
-        posts.sort(key=lambda x: x.get('scrape_date', ''), reverse=True)
-        return posts[:limit] if limit else posts
+        if not self.conn:
+            logger.warning("Database connection not available. Attempting to reconnect.")
+            self.conn = self._connect_db()
+            if not self.conn:
+                logger.error("Failed to reconnect to database. Cannot list metadata.")
+                return []
+        cursor = self.conn.cursor()
+        try:
+            query = "SELECT status_id, author, username, text, date, permalink, scrape_date FROM posts ORDER BY scrape_date DESC"
+            if limit is not None:
+                query += f" LIMIT {limit}"
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            posts = [
+                {
+                    'status_id': row['status_id'],
+                    'author': row['author'],
+                    'username': row['username'],
+                    'text': row['text'],
+                    'date': row['date'],
+                    'permalink': row['permalink'],
+                    'scrape_date': row['scrape_date']
+                }
+                for row in rows
+            ]
+            logger.info(f"Listed {len(posts)} posts from database.")
+            return posts
+        except sqlite3.Error as e:
+            logger.error(f"Error listing posts from database: {e}")
+            return []
+        finally:
+            cursor.close()
 
     def count(self) -> int:
         """Return total number of saved posts."""
-        return len(self.index.get('posts', {}))
+        if not self.conn:
+            logger.warning("Database connection not available. Attempting to reconnect.")
+            self.conn = self._connect_db()
+            if not self.conn:
+                logger.error("Failed to reconnect to database. Cannot count posts.")
+                return 0
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT COUNT(*) as count FROM posts")
+            row = cursor.fetchone()
+            count = row['count'] if row else 0
+            logger.info(f"Counted {count} posts in database.")
+            return count
+        except sqlite3.Error as e:
+            logger.error(f"Error counting posts in database: {e}")
+            return 0
+        finally:
+            cursor.close()
 
     async def delete(self, status_id: str) -> bool:
         """Delete a saved post by status ID."""
-        if status_id not in self.index.get('posts', {}):
+        if not self.conn:
+            logger.warning("Database connection not available. Attempting to reconnect.")
+            self.conn = self._connect_db()
+            if not self.conn:
+                logger.error("Failed to reconnect to database. Cannot delete post.")
+                return False
+        if status_id not in self.seen:
             logger.warning(f"Post {status_id} not found.")
             return False
-        post_file = self.data_dir / f"post_{status_id}.json"
-        if post_file.exists():
-            try:
-                post_file.unlink()
-                logger.info(f"Deleted file {post_file}")
-            except IOError as e:
-                logger.error(f"Error deleting file {post_file}: {e}")
-        self.index['posts'].pop(status_id, None)
-        self.seen.discard(status_id)
-        await self._save_index()
-        logger.info(f"Removed post {status_id} from index.")
-        return True
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("DELETE FROM posts WHERE status_id = ?", (status_id,))
+            self.conn.commit()
+            self.seen.discard(status_id)
+            logger.info(f"Deleted post {status_id} from database.")
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"Error deleting post {status_id} from database: {e}")
+            self.conn.rollback()
+            return False
+        finally:
+            cursor.close()

@@ -58,6 +58,18 @@ class Settings(BaseSettings):
         os.getenv("TEXT_ANALYSIS_MODEL", "gemini-1.5-flash")
     )
 
+    # ----- multi-model additions -----
+    ai_model_type: str = Field(
+        os.getenv("AI_MODEL_TYPE", "gemini"),
+        description="Type of AI model to use (gemini or claude)",
+    )
+    # Claude specific
+    claude_api_key: Optional[str] = Field(os.getenv("CLAUDE_API_KEY"), alias="CLAUDE_API_KEY")
+    claude_model: str = Field(
+        os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet"),
+        description="Claude model name",
+    )
+
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'

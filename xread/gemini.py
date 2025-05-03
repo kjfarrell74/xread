@@ -167,7 +167,7 @@ class GeminiProcessor:
             mime_type, _ = mimetypes.guess_type(str(path))
             mime_type = mime_type if mime_type and mime_type.startswith('image/') else "image/jpeg"
             image_part = {"mime_type": mime_type, "data": image_bytes}
-            prompt_parts = ["Describe this image objectively.", image_part]
+            prompt_parts = ["describe the image in a concise but detailed manner", image_part]
             response = await self.image_model.generate_content_async(prompt_parts)
             if not response.candidates:
                 if response.prompt_feedback and response.prompt_feedback.block_reason:

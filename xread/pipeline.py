@@ -15,7 +15,7 @@ from xread.models import ScrapedData
 from xread.utils import load_instructions
 from xread.scraper import NitterScraper
 from xread.data_manager import DataManager
-from xread.gemini import GeminiProcessor
+from xread.ai_models import AIModelFactory, AIModelError, BaseAIModel
 from xread.browser import BrowserManager
 
 class ScraperPipeline:
@@ -23,7 +23,7 @@ class ScraperPipeline:
     def __init__(self):
         self.scraper = NitterScraper()
         self.data_manager = DataManager()
-        self.gemini_processor = GeminiProcessor(self.data_manager)
+        self.ai_model: Optional[BaseAIModel] = None
         self.browser_manager = BrowserManager()
         self._browser_ready = False
         self.instructions = load_instructions()
@@ -94,25 +94,21 @@ class ScraperPipeline:
 
     async def _process_media(self, scraped_data: ScrapedData, sid: str) -> None:
         """Process images in the scraped data if conditions are met."""
-        if not (
-            self.gemini_processor.api_key_valid and 
-            self.gemini_processor.image_model and 
-            settings.max_image_downloads > 0
-        ):
+        if not (self.ai_model and await self.ai_model.is_valid() and settings.max_image_downloads > 0):
             logger.info("Image processing skipped (API invalid, model missing, or limit 0).")
             return
         
         async with aiohttp.ClientSession() as session:
             logger.info(f"Processing images for post {sid}...")
-            await self.gemini_processor.process_images(scraped_data.main_post, session, "post")
+            await self.ai_model.process_images(scraped_data.main_post, session, "post")
             for reply in scraped_data.replies:
-                if self.gemini_processor.downloaded_count >= settings.max_image_downloads:
+                if self.ai_model.downloaded_count >= settings.max_image_downloads:
                     break
-                await self.gemini_processor.process_images(reply, session, "reply")
+                await self.ai_model.process_images(reply, session, "reply")
 
     async def _generate_search_terms(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
         """Generate search terms based on scraped text content."""
-        if not (self.gemini_processor.api_key_valid and self.gemini_processor.text_model):
+        if not (self.ai_model and await self.ai_model.is_valid()):
             logger.info("Search term generation skipped (API invalid or text model missing).")
             return "Skipped: API invalid or text model missing."
 
@@ -120,7 +116,7 @@ class ScraperPipeline:
         full_text = scraped_data.get_full_text()
         if full_text.strip():
             prompt = SEARCH_TERM_PROMPT.format(scraped_text=full_text)
-            search_terms = await self.gemini_processor.generate_text_native(
+            search_terms = await self.ai_model.generate_text_native(
                 prompt, f"Search Term Generation (Post ID: {sid})"
             )
             if search_terms and (search_terms.startswith("Error:") or search_terms.startswith("Warning:")):
@@ -131,7 +127,7 @@ class ScraperPipeline:
 
     async def _generate_research_questions(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
         """Generate research questions based on scraped text content."""
-        if not (self.gemini_processor.api_key_valid and self.gemini_processor.text_model):
+        if not (self.ai_model and await self.ai_model.is_valid()):
             logger.info("Research questions generation skipped (API invalid or text model missing).")
             return "Skipped: API invalid or text model missing."
 
@@ -139,7 +135,7 @@ class ScraperPipeline:
         full_text = scraped_data.get_full_text()
         if full_text.strip():
             prompt = RESEARCH_QUESTIONS_PROMPT.format(scraped_text=full_text)
-            research_questions = await self.gemini_processor.generate_text_native(
+            research_questions = await self.ai_model.generate_text_native(
                 prompt, f"Research Questions Generation (Post ID: {sid})"
             )
             if research_questions and (research_questions.startswith("Error:") or research_questions.startswith("Warning:")):
@@ -158,11 +154,44 @@ class ScraperPipeline:
             if sid and sid not in self.data_manager.seen:
                 typer.echo(f"Error: Failed to save data for post {sid}.", err=True)
 
+    async def _ensure_ai_model(self) -> bool:
+        """Initialise the configured AI model the first time it is needed."""
+        if self.ai_model:
+            return True
+        model_type = settings.ai_model_type
+        try:
+            if model_type == "gemini":
+                cfg = {
+                    "api_key": settings.gemini_api_key,
+                    "image_model": settings.image_description_model,
+                    "text_model": settings.text_analysis_model,
+                    "max_image_downloads": settings.max_image_downloads,
+                }
+            elif model_type == "claude":
+                cfg = {
+                    "api_key": settings.claude_api_key,
+                    "model": settings.claude_model,
+                    "max_image_downloads": settings.max_image_downloads,
+                }
+            else:
+                cfg = {}
+            self.ai_model = await AIModelFactory.create(model_type, self.data_manager, cfg)
+            return True
+        except (ValueError, AIModelError) as e:
+            logger.error(f"AI model init error: {e}")
+            self.ai_model = None
+            return False
+
     async def run(self, url: str) -> None:
         """Run the full pipeline: scrape, process images, generate terms, and save."""
+        # Ensure model
+        if not await self._ensure_ai_model():
+            typer.echo("Error: AI model could not be initialised. Aborting.", err=True)
+            return
+
         await self.initialize_browser()
-        logger.info(f"Starting pipeline for {url}")
-        self.gemini_processor.downloaded_count = 0
+        logger.info(f"Starting pipeline for {url} (model: {settings.ai_model_type})")
+        self.ai_model.downloaded_count = 0
         
         try:
             normalized_url, sid = await self._prepare_url(url)
