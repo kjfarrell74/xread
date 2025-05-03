@@ -85,6 +85,21 @@ class DataManager:
                     cached_at TEXT
                 )
             ''')
+
+            # User profiles table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    username TEXT PRIMARY KEY,
+                    display_name TEXT,
+                    bio TEXT,
+                    location TEXT,
+                    website TEXT,
+                    profile_image_url TEXT,
+                    followers_count INTEGER,
+                    following_count INTEGER,
+                    join_date TEXT
+                )
+            ''')
             self.conn.commit()
             logger.info("Database tables ensured.")
         except sqlite3.Error as e:
@@ -146,8 +161,9 @@ class DataManager:
         original_url: str,
         search_terms: Optional[str] = None,
         research_questions: Optional[str] = None,
+        author_profile: Optional['UserProfile'] = None
     ) -> Optional[str]:
-        """Save scraped data to the database."""
+        """Save scraped data to the database and as JSON files."""
         if not self.conn:
             logger.error("Database not connected. Cannot save.")
             return None
@@ -187,6 +203,30 @@ class DataManager:
             self.conn.commit()
             self.seen.add(sid)
             logger.info(f"Saved post {sid} to database.")
+            
+            # Also save to JSON file
+            main_post_dict = data.main_post.__dict__.copy()
+            main_post_dict['images'] = [img.__dict__ for img in data.main_post.images]
+            replies_dicts = []
+            for reply in data.replies:
+                reply_dict = reply.__dict__.copy()
+                reply_dict['images'] = [img.__dict__ for img in reply.images]
+                replies_dicts.append(reply_dict)
+            json_data = {
+                "main_post": main_post_dict,
+                "replies": replies_dicts,
+                "original_url": original_url,
+                "scrape_date": scrape_date,
+                "suggested_search_terms": search_terms,
+                "research_questions": research_questions,
+                "author_profile": author_profile.to_dict() if author_profile else None
+            }
+            json_file_path = self.data_dir / 'scraped_data' / f'post_{sid}.json'
+            json_file_path.parent.mkdir(parents=True, exist_ok=True)
+            async with aiofiles.open(json_file_path, mode='w', encoding='utf-8') as f:
+                await f.write(json.dumps(json_data, indent=2, ensure_ascii=False))
+            logger.info(f"Saved post {sid} to JSON file at {json_file_path}.")
+            
             return sid
         except sqlite3.IntegrityError as e:
             logger.warning(f"Integrity error saving post {sid}: {e}")
@@ -196,6 +236,9 @@ class DataManager:
             logger.error(f"Error saving post {sid} to database: {e}")
             self.conn.rollback()
             return None
+        except IOError as e:
+            logger.error(f"Error saving post {sid} to JSON file: {e}")
+            return sid  # Return sid even if JSON save fails, since DB save succeeded
 
     async def load_post_data(self, status_id: str) -> Optional[ScrapedData]:
         """Load scraped data from the database for a given status_id."""
@@ -301,6 +344,80 @@ class DataManager:
         except sqlite3.Error as e:
             logger.error(f"Error counting posts in database: {e}")
             return 0
+        finally:
+            cursor.close()
+
+    async def save_user_profile(self, profile: 'UserProfile') -> bool:
+        """Save or update a user profile in the database."""
+        if not self.conn:
+            logger.error("Database not connected. Cannot save user profile.")
+            return False
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO user_profiles (
+                    username, display_name, bio, location, website, 
+                    profile_image_url, followers_count, following_count, join_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    bio = excluded.bio,
+                    location = excluded.location,
+                    website = excluded.website,
+                    profile_image_url = excluded.profile_image_url,
+                    followers_count = excluded.followers_count,
+                    following_count = excluded.following_count,
+                    join_date = excluded.join_date
+                """,
+                (
+                    profile.username, profile.display_name, profile.bio, profile.location,
+                    profile.website, profile.profile_image_url, profile.followers_count,
+                    profile.following_count, profile.join_date
+                )
+            )
+            self.conn.commit()
+            logger.info(f"Saved/Updated user profile for {profile.username} in database.")
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"Error saving user profile for {profile.username}: {e}")
+            self.conn.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    async def get_user_profile(self, username: str) -> Optional['UserProfile']:
+        """Retrieve a user profile from the database by username."""
+        if not self.conn:
+            logger.error("Database not connected. Cannot retrieve user profile.")
+            return None
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT * FROM user_profiles WHERE username = ?", (username,))
+            row = cursor.fetchone()
+            if not row:
+                logger.info(f"No user profile found for {username}.")
+                return None
+
+            from xread.models import UserProfile
+            profile = UserProfile(
+                username=row['username'],
+                display_name=row['display_name'],
+                bio=row['bio'],
+                location=row['location'],
+                website=row['website'],
+                profile_image_url=row['profile_image_url'],
+                followers_count=row['followers_count'],
+                following_count=row['following_count'],
+                join_date=row['join_date']
+            )
+            logger.info(f"Retrieved user profile for {username} from database.")
+            return profile
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving user profile for {username}: {e}")
+            return None
         finally:
             cursor.close()
 

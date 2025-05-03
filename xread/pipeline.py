@@ -144,9 +144,9 @@ class ScraperPipeline:
         logger.warning(f"Post {sid} has no text content for research questions generation.")
         return "Info: No text content provided for analysis."
 
-    async def _save_results(self, scraped_data: ScrapedData, url: str, search_terms: Optional[str], research_questions: Optional[str], sid: str) -> None:
-        """Save the scraped data along with generated content."""
-        saved_sid = await self.data_manager.save(scraped_data, url, search_terms, research_questions)
+    async def _save_results(self, scraped_data: ScrapedData, url: str, search_terms: Optional[str], research_questions: Optional[str], sid: str, author_profile: Optional['UserProfile'] = None) -> None:
+        """Save the scraped data along with generated content and author profile."""
+        saved_sid = await self.data_manager.save(scraped_data, url, search_terms, research_questions, author_profile)
         if saved_sid:
             logger.info(f"Successfully saved post {saved_sid}")
             typer.echo(f"Success: Saved post {saved_sid}.")
@@ -210,7 +210,15 @@ class ScraperPipeline:
             search_terms = await self._generate_search_terms(scraped_data, sid)
             research_questions = await self._generate_research_questions(scraped_data, sid)
             
-            await self._save_results(scraped_data, url, search_terms, research_questions, sid)
+            # Look up author profile
+            author_username = scraped_data.main_post.username
+            author_profile = await self.data_manager.get_user_profile(author_username)
+            if author_profile:
+                logger.info(f"Found user profile for {author_username} in database.")
+            else:
+                logger.info(f"No user profile found for {author_username} in database.")
+            
+            await self._save_results(scraped_data, url, search_terms, research_questions, sid, author_profile)
         except ValueError as e:
             logger.error(f"URL/Input error: {e}")
             typer.echo(f"Error: {e}", err=True)

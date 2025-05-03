@@ -54,3 +54,21 @@ class ScrapedData:
                 parts.append(f"--- Reply {i} (@{reply.username}) ---\n{reply.text}\n")
         
         return "".join(parts).strip()
+
+
+@dataclass
+class UserProfile:
+    """Represents a Twitter user profile with relevant information."""
+    username: str
+    display_name: str
+    bio: Optional[str] = None
+    location: Optional[str] = None
+    website: Optional[str] = None
+    profile_image_url: Optional[str] = None
+    followers_count: Optional[int] = None
+    following_count: Optional[int] = None
+    join_date: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert UserProfile to a JSON-serializable dictionary."""
+        return asdict(self)
