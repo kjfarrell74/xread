@@ -1,0 +1,89 @@
+import asyncio
+import pyperclip
+from pyperclip import PyperclipException
+import re
+import sys
+import time
+
+import os
+# Define sound notification function
+def play_sound():
+    print("Playing sound notification")
+    success = False
+
+    if sys.platform.startswith('win'):
+        # Windows - use console bell
+        os.system('echo \a')
+        success = True
+    else:
+        # Linux - try multiple approaches
+        # First try console bell
+        os.system('printf "\\a"')
+
+        # Then try to play the sound file if it exists
+        if os.path.exists('sound.wav'):
+            # Try multiple Linux audio players
+            cmd = ('paplay sound.wav 2>/dev/null || '
+                  'aplay sound.wav 2>/dev/null || '
+                  'ffplay -nodisp -autoexit -loglevel quiet sound.wav 2>/dev/null || '
+                  'mplayer -really-quiet sound.wav 2>/dev/null')
+            exit_code = os.system(cmd)
+            success = exit_code == 0
+
+    if success:
+        print("✓ Sound notification played")
+
+SOUND_FUNC = play_sound
+
+from xread.pipeline import ScraperPipeline
+
+# Pattern for Twitter/X/Nitter post URLs
+TWITTER_URL_RE = re.compile(
+    r"(https?://)?(www\.)?(twitter\.com|x\.com|nitter\.[a-z0-9\-\.]+)/[^/]+/status/\d+",
+    re.IGNORECASE
+)
+
+async def process_url(url):
+    pipeline = ScraperPipeline()
+    await pipeline.data_manager.initialize()
+    await pipeline.initialize_browser()
+    try:
+        await pipeline.run(url)
+        print("✅ Scraping completed successfully!")
+    except Exception as e:
+        print(f"❌ Error during scraping: {e}")
+        raise
+    finally:
+        await pipeline.close_browser()
+        print("🔔 Playing completion notification...")
+        SOUND_FUNC()
+
+def main():
+    last_clipboard = ""
+    print("Monitoring clipboard for Twitter/X/Nitter links...")
+    # Play a sound to confirm script started and audio is working
+    print("Testing sound notification...")
+    SOUND_FUNC()
+    try:
+        while True:
+            try:
+                clipboard_content = pyperclip.paste().strip()
+            except PyperclipException:
+                print("Error: No clipboard copy/paste mechanism found.")
+                print("On Linux, install 'xclip' or 'xsel' (e.g., sudo apt-get install xclip).")
+                print("See https://pyperclip.readthedocs.io/en/latest/index.html#not-implemented-error for details.")
+                sys.exit(1)
+            if clipboard_content != last_clipboard:
+                match = TWITTER_URL_RE.search(clipboard_content)
+                if match:
+                    url = match.group(0)
+                    print(f"Detected URL: {url} – Starting scrape.")
+                    asyncio.run(process_url(url))
+                    print("Scrape complete. Ready for next link.")
+                last_clipboard = clipboard_content
+            time.sleep(1)  # Check every second
+    except KeyboardInterrupt:
+        print("Exiting.")
+
+if __name__ == "__main__":
+    main()
