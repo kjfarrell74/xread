@@ -5,8 +5,9 @@ XReader is an asynchronous CLI tool designed to scrape tweet data from a Nitter 
 ## Features
 
 - **Scraping**: Extracts tweet data including main posts and replies from a specified Nitter instance using Playwright and BeautifulSoup.
-- **Image Processing**: Downloads images from posts and generates objective descriptions using the Gemini API.
-- **Text Analysis**: Generates search terms and research questions based on post content to aid in fact-checking and deeper investigation.
+- **Report Generation**: Generates detailed, factual reports about social media posts using the Perplexity AI API.
+- **Post Enhancement**: Enriches scraped data with normalized dates, media flags, and image descriptions using heuristic analysis.
+- **Data Normalization**: Standardizes data formats with ISO 8601 timestamps and consistent metadata structure.
 - **Data Management**: Saves scraped data, image descriptions, and generated metadata in a structured JSON format for easy access and reference.
 
 ## Installation
@@ -96,8 +97,8 @@ Debug information, such as failed HTML parses, is saved in the `debug_output` di
 
 ## Troubleshooting
 
-- **API Key Issues**: Ensure your Gemini API key is correctly set in the `.env` file. If you encounter authentication errors, verify the key's validity.
-- **Rate Limiting**: If you hit rate limits with the Gemini API or Nitter instance, consider adjusting the `MAX_IMAGE_DOWNLOADS_PER_RUN` in `.env` or adding delays between requests.
+- **API Key Issues**: Ensure your Perplexity API key is correctly set in the `.env` file. If you encounter authentication errors, verify the key's validity.
+- **Rate Limiting**: If you hit rate limits with the Perplexity API or Nitter instance, consider adjusting request frequency or adding delays between requests.
 - **Parsing Errors**: If posts fail to parse, check `debug_output` for saved HTML files to diagnose the issue. Ensure the Nitter instance is operational.
 - **Installation Problems**: Verify that all dependencies are installed correctly using `pip install -r requirements.txt`. Check for Python version compatibility.
 

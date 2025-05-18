@@ -18,7 +18,7 @@ This document provides detailed examples and instructions on how to use XReader,
 
 ## Overview
 
-XReader allows users to scrape social media posts from Nitter, a privacy-focused alternative to Twitter, and enhances the data with AI-generated image descriptions and search terms for fact-checking or research purposes. The tool can be operated in two primary modes: interactive mode for a user-friendly interface and command-line mode for quick, scripted operations.
+XReader allows users to scrape social media posts from Nitter, a privacy-focused alternative to Twitter, and enhances the data with AI-generated factual reports from Perplexity and normalized metadata for fact-checking or research purposes. The tool can be operated in two primary modes: interactive mode for a user-friendly interface and command-line mode for quick, scripted operations.
 
 ## Running XReader
 
@@ -58,7 +58,7 @@ Or directly in interactive mode by typing the URL:
 > https://twitter.com/user/status/1234567890123456789
 ```
 
-XReader will normalize the URL to the configured Nitter instance, fetch the content, process any images (up to the limit set in `.env`), generate search terms and research questions if configured, and save the data to the `scraped_data` directory.
+XReader will normalize the URL to the configured Nitter instance, fetch the content, generate a comprehensive factual report using the Perplexity API, enhance post data with normalized dates and metadata, and save the results to the `scraped_data` directory.
 
 ### List Saved Posts
 
@@ -148,8 +148,8 @@ Goodbye.
 
 XReader's behavior can be customized through configuration files:
 
-- **`.env`**: Adjust settings like the data directory (`DATA_DIR`), Nitter instance URL (`NITTER_BASE_URL`), maximum image downloads per run (`MAX_IMAGE_DOWNLOADS_PER_RUN`), and Gemini model selections. See [CONFIGURATION.md](CONFIGURATION.md) for details.
-- **`instructions.yaml`**: Modify prompts for image descriptions or parameters for search term and research question generation. Use the `reload_instructions` command in interactive mode to apply changes without restarting.
+- **`.env`**: Adjust settings like the data directory (`DATA_DIR`), Nitter instance URL (`NITTER_BASE_URL`), and Perplexity API settings. See [CONFIGURATION.md](CONFIGURATION.md) for details.
+- **`instructions.yaml`**: Currently used for legacy compatibility. Most settings have been replaced by Perplexity report generation. Use the `reload_instructions` command in interactive mode to apply changes without restarting.
 
 By tailoring these configurations, you can adapt XReader to specific research needs, such as focusing on fact-checking or contextual analysis.
 
