@@ -14,7 +14,7 @@ from prompt_toolkit.history import FileHistory
 from xread.settings import settings, logger
 from xread.constants import FileFormats
 from xread.pipeline import ScraperPipeline
-from xread.ai_models import AIModelFactory  # late import to avoid circulars
+# No AI model factory
 
 # --- CLI Application ---
 app = typer.Typer(name="xread", invoke_without_command=True, no_args_is_help=False)
@@ -22,14 +22,12 @@ app = typer.Typer(name="xread", invoke_without_command=True, no_args_is_help=Fal
 
 async def run_interactive_mode_async(pipeline: ScraperPipeline) -> None:
     """Run interactive mode for URL input or commands."""
-    current_model = settings.ai_model_type
-    print("XReader CLI (AI-powered image & text analysis)")
-    print(f"Current AI model: {current_model} (set AI_MODEL_TYPE env or use --model to change)")
+    print("XReader CLI (Perplexity Reports)")
     print("Enter URL to scrape, or command:")
-    print("  help, model, list [limit], stats, delete <id>, reload_instructions, quit")
+    print("  help, list [limit], stats, delete <id>, quit")
 
     commands = [
-        'scrape', 'list', 'stats', 'delete', 'model', 'help', 'quit', 'exit', 'reload_instructions'
+        'scrape', 'list', 'stats', 'delete', 'help', 'quit', 'exit'
     ]
     command_completer = WordCompleter(commands, ignore_case=True)
     history = FileHistory(str(settings.data_dir / FileFormats.HISTORY_FILE))
@@ -57,26 +55,12 @@ async def run_interactive_mode_async(pipeline: ScraperPipeline) -> None:
             if cmd in ("quit", "exit"):
                 print("Goodbye.")
                 break
-            elif cmd == "reload_instructions":
-                pipeline.reload_instructions()
-                print("Instructions reloaded.")
-            elif cmd == "model":
-                if args_str.strip():
-                    new_model = args_str.strip().lower()
-                    if new_model in AIModelFactory.supported():
-                        settings.ai_model_type = new_model
-                        print(f"AI model switched to: {new_model} (will apply on next scrape)")
-                    else:
-                        print(f"Unsupported model. Supported: {', '.join(AIModelFactory.supported())}")
-                else:
-                    print(f"Current AI model: {settings.ai_model_type}")
             elif cmd == "help":
                 print("\nAvailable commands:")
-                print("  <URL>                      Scrape URL (saves data + generates search terms).")
+                print("  <URL>                      Scrape URL (saves data + generates Perplexity report).")
                 print("  list [limit]               List saved post metadata.")
                 print("  stats                      Show count of saved posts.")
                 print("  delete <id>                Delete a saved post by status ID.")
-                print("  reload_instructions        Reload instructions from instructions.yaml (if used).")
                 print("  help                       Show this help message.")
                 print("  quit / exit                Exit the application.\n")
             elif cmd == "list":
@@ -112,20 +96,12 @@ async def run_interactive_mode_async(pipeline: ScraperPipeline) -> None:
 
 @app.command(name="scrape")
 async def scrape_command(
-    url: str = typer.Argument(..., help="Tweet/Nitter URL to scrape"),
-    model: str = typer.Option(
-        settings.ai_model_type,
-        "--model",
-        "-m",
-        help=f"AI model to use (supported: {', '.join(AIModelFactory.supported())})",
-    ),
+    url: str = typer.Argument(..., help="Tweet/Nitter URL to scrape")
 ) -> None:
     """Scrape URL, process images, generate search terms, and save combined data."""
-    # override model type for this invocation
-    settings.ai_model_type = model
     pipeline = ScraperPipeline()
     await pipeline.data_manager.initialize()
-    logger.info(f"Scraping URL via command: {url} using model '{model}'")
+    logger.info(f"Scraping URL via command: {url}")
     await pipeline.run(url)
 
 

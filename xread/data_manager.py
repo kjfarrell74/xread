@@ -148,19 +148,11 @@ class DataManager:
 
     # Removed _save_index as it's no longer needed with DB storage
 
-    async def _save_cache(self) -> None:
-        try:
-            async with aiofiles.open(self.cache_file, mode='w', encoding='utf-8') as f:
-                await f.write(json.dumps(self.image_cache, indent=2, ensure_ascii=False))
-        except IOError as e:
-            logger.error(f"Error saving image cache: {e}")
-
     async def save(
         self,
         data: ScrapedData,
         original_url: str,
-        search_terms: Optional[str] = None,
-        research_questions: Optional[str] = None,
+        perplexity_report: Optional[str] = None,
         author_profile: Optional['UserProfile'] = None
     ) -> Optional[str]:
         """Save scraped data to the database and as JSON files."""
@@ -186,11 +178,63 @@ class DataManager:
         try:
             scrape_date = datetime.now(timezone.utc).isoformat()
             images_json = json.dumps([img.__dict__ for img in data.main_post.images])
-            cursor.execute(
-                "INSERT INTO posts (status_id, author, username, text, date, permalink, images_json, original_url, scrape_date, suggested_search_terms, research_questions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (sid, data.main_post.user, data.main_post.username, data.main_post.text, data.main_post.date,
-                 data.main_post.permalink, images_json, original_url, scrape_date, search_terms, research_questions)
-            )
+            # Check if we need to alter the table to replace search_terms and research_questions with perplexity_report
+            try:
+                cursor.execute("PRAGMA table_info(posts)")
+                columns = [column[1] for column in cursor.fetchall()]
+
+                if "perplexity_report" not in columns:
+                    # Add new column and remove old ones in a transaction
+                    cursor.execute("BEGIN TRANSACTION")
+                    cursor.execute("ALTER TABLE posts ADD COLUMN perplexity_report TEXT")
+                    cursor.execute("PRAGMA foreign_keys=off")
+
+                    # Create temp table with new structure
+                    cursor.execute('''
+                        CREATE TABLE posts_new (
+                            status_id TEXT PRIMARY KEY,
+                            author TEXT,
+                            username TEXT,
+                            text TEXT,
+                            date TEXT,
+                            permalink TEXT UNIQUE,
+                            images_json TEXT,
+                            original_url TEXT,
+                            scrape_date TEXT,
+                            perplexity_report TEXT
+                        )
+                    ''')
+
+                    # Copy data from old table to new table
+                    cursor.execute('''
+                        INSERT INTO posts_new
+                        SELECT status_id, author, username, text, date, permalink, images_json, original_url, scrape_date, NULL as perplexity_report
+                        FROM posts
+                    ''')
+
+                    # Drop old table and rename new one
+                    cursor.execute("DROP TABLE posts")
+                    cursor.execute("ALTER TABLE posts_new RENAME TO posts")
+                    cursor.execute("PRAGMA foreign_keys=on")
+                    cursor.execute("COMMIT")
+
+                    logger.info("Database schema updated to use perplexity_report instead of search terms and research questions")
+
+                cursor.execute(
+                    "INSERT INTO posts (status_id, author, username, text, date, permalink, images_json, original_url, scrape_date, perplexity_report) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (sid, data.main_post.user, data.main_post.username, data.main_post.text, data.main_post.date,
+                     data.main_post.permalink, images_json, original_url, scrape_date, perplexity_report)
+                )
+            except sqlite3.Error as e:
+                logger.error(f"Error updating database schema: {e}")
+                self.conn.rollback()
+
+                # Fall back to old schema if migration failed
+                cursor.execute(
+                    "INSERT INTO posts (status_id, author, username, text, date, permalink, images_json, original_url, scrape_date, suggested_search_terms, research_questions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (sid, data.main_post.user, data.main_post.username, data.main_post.text, data.main_post.date,
+                     data.main_post.permalink, images_json, original_url, scrape_date, None, perplexity_report)
+                )
 
             for reply in data.replies:
                 reply_images_json = json.dumps([img.__dict__ for img in reply.images])
@@ -217,8 +261,7 @@ class DataManager:
                 "replies": replies_dicts,
                 "original_url": original_url,
                 "scrape_date": scrape_date,
-                "suggested_search_terms": search_terms,
-                "research_questions": research_questions,
+                "perplexity_report": perplexity_report,
                 "author_profile": author_profile.to_dict() if author_profile else None
             }
             json_file_path = self.data_dir / 'scraped_data' / f'post_{sid}.json'
@@ -256,7 +299,7 @@ class DataManager:
             main_post_images = [Image(**img_dict) for img_dict in json.loads(main_post_row['images_json'] or '[]')]
             main_post = Post(
                 status_id=main_post_row['status_id'],
-                user=main_post_row['user'],
+                user=main_post_row['author'],
                 username=main_post_row['username'],
                 text=main_post_row['text'],
                 date=main_post_row['date'],
@@ -299,6 +342,8 @@ class DataManager:
             if not self.conn:
                 logger.error("Failed to reconnect to database. Cannot list metadata.")
                 return []
+            # Ensure database tables exist after reconnecting
+            self._initialize_db()
         cursor = self.conn.cursor()
         try:
             query = "SELECT status_id, author, username, text, date, permalink, scrape_date FROM posts ORDER BY scrape_date DESC"
@@ -334,6 +379,8 @@ class DataManager:
             if not self.conn:
                 logger.error("Failed to reconnect to database. Cannot count posts.")
                 return 0
+            # Ensure database tables exist after reconnecting
+            self._initialize_db()
         cursor = self.conn.cursor()
         try:
             cursor.execute("SELECT COUNT(*) as count FROM posts")
@@ -429,6 +476,8 @@ class DataManager:
             if not self.conn:
                 logger.error("Failed to reconnect to database. Cannot delete post.")
                 return False
+            # Ensure database tables exist after reconnecting
+            self._initialize_db()
         if status_id not in self.seen:
             logger.warning(f"Post {status_id} not found.")
             return False

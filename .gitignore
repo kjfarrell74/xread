@@ -77,3 +77,13 @@ scraped_data/
 debug_last_page.html
 pyvenv.cfg 
 .env
+
+# Unnecessary generated or backup files
+backup_data_*
+debug_output/
+debug.sh
+test_perplexity.sh
+verify_setup.sh
+sound.wav
+
+**/.claude/settings.local.json

@@ -1,6 +1,6 @@
 # XReader Usage Guide
 
-This document provides detailed examples and instructions on how to use XReader, an asynchronous CLI tool for scraping tweet data from a Nitter instance, generating image descriptions and search terms using the Google Gemini API, and saving the combined data.
+This document provides detailed examples and instructions on how to use XReader, an asynchronous CLI tool for scraping tweet data from a Nitter instance, generating factual reports using the Perplexity AI API, and saving the combined data.
 
 ## Table of Contents
 
@@ -122,13 +122,12 @@ When in interactive mode, XReader supports the following commands in addition to
 - **`list [limit]`**: Lists saved post metadata, optionally limited to a specified number.
 - **`stats`**: Shows the total count of saved posts.
 - **`delete <id>`**: Deletes a saved post by its status ID.
-- **`reload_instructions`**: Reloads custom instructions from `instructions.yaml` without restarting the application. Useful for tweaking prompts or settings on the fly.
 - **`quit` or `exit`**: Exits the interactive mode.
 
 Example session:
 
 ```
-XReader CLI (Gemini Image Desc + Search Terms)
+XReader CLI (Perplexity Reports)
 Enter URL to scrape, or command:
   help, list [limit], stats, delete <id>, reload_instructions, quit
 > list 3
@@ -149,7 +148,6 @@ Goodbye.
 XReader's behavior can be customized through configuration files:
 
 - **`.env`**: Adjust settings like the data directory (`DATA_DIR`), Nitter instance URL (`NITTER_BASE_URL`), and Perplexity API settings. See [CONFIGURATION.md](CONFIGURATION.md) for details.
-- **`instructions.yaml`**: Currently used for legacy compatibility. Most settings have been replaced by Perplexity report generation. Use the `reload_instructions` command in interactive mode to apply changes without restarting.
 
 By tailoring these configurations, you can adapt XReader to specific research needs, such as focusing on fact-checking or contextual analysis.
 

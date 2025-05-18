@@ -32,43 +32,46 @@ class FileFormats:
 
 class ErrorMessages:
     """Constants for error message strings."""
-    API_KEY_MISSING = "GEMINI_API_KEY required if MAX_IMAGE_DOWNLOADS_PER_RUN > 0 or TEXT_ANALYSIS_MODEL is set"
+    API_KEY_MISSING = "PERPLEXITY_API_KEY required for report generation"
     BROWSER_NOT_LAUNCHED = "Browser not launched."
     FETCH_FAILED = "Fetch failed."
     PARSE_FAILED = "Parse failed."
+    PERPLEXITY_API_FAILED = "Failed to generate Perplexity report."
 
-# Prompt templates for Gemini API
-SEARCH_TERM_PROMPT = """
-Analyze the following text content scraped from a social media thread (main post
-and replies). Identify the key claims, topics, or entities mentioned.
-Based on these key elements, generate a list of 8-10 effective search engine
-query terms that someone could use to find the latest, reliable information or
-fact-checks regarding these claims/topics.
-Categorize the search terms into types such as factual claims, entities, and
-topics if applicable. Format the output as a categorized list, with each search
-term on a new line, starting with a bullet point (*).
+# Prompt templates
+# Define the Perplexity prompt template for reference
+PERPLEXITY_REPORT_PROMPT = """
+Please provide a comprehensive, detailed, and factual analysis of the following Twitter/X thread.
+Pay close attention to ALL of the following requirements:
 
-Scraped Text Content:
+1. ACCURACY: Ensure 100% factual accuracy. When presenting claims, clearly distinguish between verified facts and opinions expressed in the thread.
+
+2. OBJECTIVITY: Maintain complete neutrality and avoid any political, social, or ideological bias.
+   Do not take sides in any contentious issues mentioned in the thread.
+
+3. COMPLETENESS: Include ALL key points, arguments, claims, and perspectives expressed by ALL users in the thread.
+
+4. IMAGES: Pay special attention to any images in the thread. Describe what each image shows in detail.
+   For each image, analyze its relevance to the discussion and how it supports or relates to the text.
+
+5. CONTEXT: Provide comprehensive background information and broader context to help fully understand the thread.
+   Include relevant historical, social, technical, or industry context that helps explain the discussion.
+
+6. STRUCTURE: Organize your analysis clearly with:
+   - A thorough summary of the main post
+   - A detailed breakdown of the key themes and perspectives in the replies
+   - A section specifically analyzing any images
+   - Background context for the topic being discussed
+   - Where appropriate, factual information that adds context to claims made in the thread
+
+7. FACTUAL CORRECTION: If you detect any demonstrably false claims in the thread, note them objectively along with correct factual information.
+
+8. MULTI-FACETED ANALYSIS: Present ALL sides of any debate or disagreement appearing in the thread without favoring any particular viewpoint.
+
+Remember that your analysis will serve as a comprehensive record and reference for this content. Be thorough, neutral, and exacting in your factual presentation.
+
+Thread Content:
 ---
 {scraped_text}
 ---
-
-Generated Search Terms:
-"""
-
-RESEARCH_QUESTIONS_PROMPT = """
-Analyze the following text content scraped from a social media thread (main post
-and replies). Identify the key claims, topics, or controversial points 
-mentioned. Based on these elements, generate a list of 3-5 specific research questions that
-could guide deeper investigation into the content. These questions should
-encourage fact-checking, exploration of context, or understanding of
-implications. Format the output as a simple list, with each question on a new line,
-starting with a bullet point (*).
-
-Scraped Text Content:
----
-{scraped_text}
----
-
-Generated Research Questions:
 """

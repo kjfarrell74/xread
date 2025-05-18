@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field, ValidationError, HttpUrl
-from typing import Optional, List
+from typing import List
 import logging
 from dotenv import load_dotenv
 import typer
@@ -31,7 +31,6 @@ class Settings(BaseSettings):
         int(os.getenv("MAX_IMAGE_DOWNLOADS_PER_RUN", DEFAULT_MAX_IMAGE_DOWNLOADS)),
         ge=0,
     )
-    gemini_api_key: Optional[str] = Field(os.getenv("GEMINI_API_KEY"), alias="GEMINI_API_KEY")
     status_id_regex: str = r"status/(\d+)"
     full_url_regex: str = (
         r"(?:https?://)?(?:www\.)?(?:twitter\.com|x\.com|nitter\.(?:net|[a-z0-9-]+))/"
@@ -50,25 +49,9 @@ class Settings(BaseSettings):
     image_ignore_keywords: List[str] = Field(
         ['profile_images', 'avatar', 'user_media']
     )
-    image_description_model: str = Field(
-        os.getenv("IMAGE_DESCRIPTION_MODEL", "gemini-1.5-flash")
-    )
     save_failed_html: bool = Field(bool(os.getenv("SAVE_FAILED_HTML", True)))
-    text_analysis_model: str = Field(
-        os.getenv("TEXT_ANALYSIS_MODEL", "gemini-1.5-flash")
-    )
 
-    # ----- multi-model additions -----
-    ai_model_type: str = Field(
-        os.getenv("AI_MODEL_TYPE", "gemini"),
-        description="Type of AI model to use (gemini or claude)",
-    )
-    # Claude specific
-    claude_api_key: Optional[str] = Field(os.getenv("CLAUDE_API_KEY"), alias="CLAUDE_API_KEY")
-    claude_model: str = Field(
-        os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet"),
-        description="Claude model name",
-    )
+    # No AI model-specific settings are needed as Perplexity is directly integrated.
 
     class Config:
         env_file = ".env"
@@ -79,16 +62,11 @@ class Settings(BaseSettings):
 # Initialize settings with error handling
 try:
     settings = Settings()
-    gemini_needed = (
-        settings.max_image_downloads > 0 or bool(settings.text_analysis_model)
-    )
-    if gemini_needed and not settings.gemini_api_key:
-        raise ValueError(
-            "GEMINI_API_KEY required if MAX_IMAGE_DOWNLOADS_PER_RUN > 0 or TEXT_ANALYSIS_MODEL is set"
-        )
+    # Create debug directory if needed
     if settings.save_failed_html:
         Path(FileFormats.DEBUG_DIR).mkdir(parents=True, exist_ok=True)
-except (ValidationError, ValueError) as e:
+    # No AI model type checking needed as Perplexity is directly used.
+except ValidationError as e:
     logger.error(f"Configuration error: {e}")
     typer.echo(f"Configuration error: {e}", err=True)
     typer.echo("Check environment variables or .env file.", err=True)

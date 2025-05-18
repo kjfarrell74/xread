@@ -1,6 +1,6 @@
 # XReader
 
-XReader is an asynchronous CLI tool designed to scrape tweet data from a Nitter instance, generate image descriptions and search terms using the Google Gemini API, and save the combined data for further analysis. This tool is ideal for researchers, fact-checkers, and anyone interested in analyzing social media content with enhanced metadata.
+XReader is an asynchronous CLI tool designed to scrape tweet data from a Nitter instance, generate detailed factual reports using the Perplexity AI API, and save the combined data for further analysis. This tool is ideal for researchers, fact-checkers, and anyone interested in analyzing social media content with enhanced metadata.
 
 ## Features
 
@@ -32,11 +32,11 @@ XReader is an asynchronous CLI tool designed to scrape tweet data from a Nitter 
    ```
 
 3. **Set Up Environment Variables**:
-   Copy the `.env` template to `.env` and update it with your Gemini API key:
+   Copy the `.env` template to `.env` and update it with your Perplexity API key:
    ```bash
    cp .env.example .env
    ```
-   Edit `.env` to replace `your_gemini_api_key_here` with your actual API key.
+   Edit `.env` to replace placeholder values with your actual API keys for Perplexity and other configurations.
 
 4. **Run the Tool**:
    You can now run XReader using:
@@ -79,10 +79,9 @@ For detailed usage examples, refer to [USAGE.md](USAGE.md).
 
 ## Configuration
 
-XReader can be configured via the `.env` file and `instructions.yaml` for custom prompts and settings.
+XReader can be configured via the `.env` file.
 
-- **`.env`**: Contains API keys, data directory paths, Nitter instance URL, and model selections for image and text analysis.
-- **`instructions.yaml`**: Customizes prompts for image descriptions, search term generation, and research question options.
+- **`.env`**: Contains API keys for Perplexity, data directory paths, Nitter instance URL, and other configurations.
 
 For a full list of configuration options, see [CONFIGURATION.md](CONFIGURATION.md).
 
@@ -90,15 +89,14 @@ For a full list of configuration options, see [CONFIGURATION.md](CONFIGURATION.m
 
 Scraped data is stored in the `scraped_data` directory with the following structure:
 - `index.json`: An index of all scraped posts.
-- `post_[STATUSID].json`: Individual post data including main post, replies, image descriptions, search terms, and research questions.
-- `cache/image_descriptions.json`: Cached descriptions for images to avoid redundant API calls.
+- `post_[STATUSID].json`: Individual post data including main post, replies, and Perplexity report.
 
 Debug information, such as failed HTML parses, is saved in the `debug_output` directory.
 
 ## Troubleshooting
 
-- **API Key Issues**: Ensure your Perplexity API key is correctly set in the `.env` file. If you encounter authentication errors, verify the key's validity.
-- **Rate Limiting**: If you hit rate limits with the Perplexity API or Nitter instance, consider adjusting request frequency or adding delays between requests.
+- **API Key Issues**: Ensure your Perplexity and Claude API keys are correctly set in the `.env` file. If you encounter authentication errors, verify the keys' validity.
+- **Rate Limiting**: If you hit rate limits with the Perplexity API, Claude API, or Nitter instance, consider adjusting request frequency or adding delays between requests.
 - **Parsing Errors**: If posts fail to parse, check `debug_output` for saved HTML files to diagnose the issue. Ensure the Nitter instance is operational.
 - **Installation Problems**: Verify that all dependencies are installed correctly using `pip install -r requirements.txt`. Check for Python version compatibility.
 
