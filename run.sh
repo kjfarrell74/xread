@@ -41,3 +41,19 @@ else
   python clipboard_watcher.py
 fi
 
+# Play notification sound when the script completes, if a ding.mp3 file is present
+if [ -f "ding.mp3" ]; then
+  # Try common audio players
+  if command -v mpg123 >/dev/null 2>&1; then
+    mpg123 -q ding.mp3
+  elif command -v afplay >/dev/null 2>&1; then
+    afplay ding.mp3
+  elif command -v mpv >/dev/null 2>&1; then
+    mpv --no-terminal --quiet ding.mp3
+  elif command -v cvlc >/dev/null 2>&1; then
+    cvlc --play-and-exit --quiet ding.mp3
+  else
+    echo "Notification sound found but no suitable player installed (mpg123, afplay, mpv, cvlc)."
+  fi
+fi
+
