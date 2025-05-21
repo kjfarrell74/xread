@@ -28,7 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Twitter/X/Nitter URL detection regex pattern in clipboard watcher.
 - Image URL formatting for compatibility with Perplexity API.
 - Database schema handling for storing Perplexity reports.
-
+- Fixed error when saving replies by adding missing `text` column to the `replies` table in the SQLite database. Manual schema migration applied.
 ### Removed
 - Image description and research question generation using Gemini API (replaced with Perplexity).
 
