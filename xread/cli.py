@@ -174,6 +174,9 @@ async def delete_post(status_id: str = typer.Argument(..., help="Status ID to de
         print(f"Could not delete post {status_id} (not found or error).")
 
 
+import subprocess
+import os
+
 async def async_main() -> None:
     """Main async entry point."""
     pipeline = ScraperPipeline()
@@ -195,3 +198,5 @@ async def async_main() -> None:
         logger.exception("Fatal error in main execution:")
         typer.echo(f"Fatal Error: {e}", err=True)
         sys.exit(1)
+    finally:
+        pass

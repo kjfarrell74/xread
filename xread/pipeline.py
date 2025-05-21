@@ -21,6 +21,7 @@ from xread.data_manager import DataManager
 # No AI model factory or base classes needed as Perplexity is directly integrated.
 from xread.browser import BrowserManager
 from xread.json_upgrader import upgrade_perplexity_json
+from xread.utils import play_ding
 
 class ScraperPipeline:
     """Orchestrates scraping, processing, generating search terms, and saving data."""
@@ -503,6 +504,8 @@ class ScraperPipeline:
 
             # Save results with upgraded data
             await self._save_results(scraped_data, url, perplexity_report, sid, author_profile, url_sid)
+            # Play notification sound after successful scrape and save
+            play_ding()
 
         except ValueError as e:
             logger.error(f"URL/Input error: {e}")

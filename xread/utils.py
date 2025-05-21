@@ -9,6 +9,9 @@ import functools
 import aiohttp
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 
+import os
+import subprocess
+
 from xread.settings import settings, logger
 
 def with_retry(retries: int = None, delay: int = None):
@@ -48,3 +51,28 @@ def with_retry(retries: int = None, delay: int = None):
             return None
         return wrapper
     return decorator
+
+def play_ding():
+    """
+    Play the notification sound (ding.mp3) using an available audio player.
+    Tries mpg123, mpv, cvlc, or afplay.
+    """
+    ding_path = os.path.join(os.path.dirname(__file__), "..", "ding.mp3")
+    ding_path = os.path.abspath(ding_path)
+    if not os.path.isfile(ding_path):
+        logger.info("ding.mp3 not found, skipping notification sound.")
+        return
+    players = [
+        ["mpg123", "-q", ding_path],
+        ["mpv", "--no-terminal", "--quiet", ding_path],
+        ["cvlc", "--play-and-exit", "--quiet", ding_path],
+        ["afplay", ding_path],  # macOS
+    ]
+    for player in players:
+        try:
+            subprocess.run([player[0], "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(player)
+            logger.info(f"Played notification sound using {player[0]}")
+            break
+        except Exception:
+            continue
