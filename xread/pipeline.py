@@ -13,6 +13,7 @@ from xread.settings import settings, logger
 from xread.constants import ErrorMessages, SEARCH_TERM_PROMPT, RESEARCH_QUESTIONS_PROMPT, FileFormats
 from xread.models import ScrapedData
 from xread.utils import load_instructions
+from xread.exceptions import FetchError, ParseError
 from xread.scraper import NitterScraper
 from xread.data_manager import DataManager
 from xread.ai_models import AIModelFactory, AIModelError, BaseAIModel
@@ -69,23 +70,24 @@ class ScraperPipeline:
             raise ValueError("Status ID extraction failed.")
         return normalized_url, sid
 
-    async def _fetch_and_parse(self, normalized_url: str, sid: str) -> tuple[Optional[str], Optional[ScrapedData]]:
+    async def _fetch_and_parse(self, normalized_url: str, sid: str) -> ScrapedData:
         """Fetch HTML content and parse it into structured data."""
         page = await self.browser_manager.new_page()
+        html_content: Optional[str] = None # Ensure html_content is defined for _save_failed_html
         try:
             html_content = await self.scraper.fetch_html(page, normalized_url)
             if not html_content:
                 logger.error(f"Fetch failed for {normalized_url}")
                 typer.echo(f"Error: {ErrorMessages.FETCH_FAILED}", err=True)
-                return None, None
+                raise FetchError(f"Failed to fetch HTML for {normalized_url}")
 
             scraped_data = self.scraper.parse_html(html_content)
             if not scraped_data:
                 logger.error(f"Parse failed for {normalized_url}")
                 typer.echo(f"Error: {ErrorMessages.PARSE_FAILED}", err=True)
-                await self._save_failed_html(sid, html_content)
-                return html_content, None
-            return html_content, scraped_data
+                await self._save_failed_html(sid, html_content) # html_content will be available here
+                raise ParseError(f"Failed to parse HTML for {normalized_url}")
+            return scraped_data
         finally:
             try:
                 await page.close()
@@ -199,18 +201,13 @@ class ScraperPipeline:
                 logger.info(f"Post {sid} seen. Skipping.")
                 typer.echo(f"Skipped (already saved): {sid}")
                 return
-                
-            html_content, scraped_data = await self._fetch_and_parse(normalized_url, sid)
-            if not scraped_data:
-                if html_content:
-                    await self._save_failed_html(sid, html_content)
-                return
-                
+
+            scraped_data = await self._fetch_and_parse(normalized_url, sid)
+            
             await self._process_media(scraped_data, sid)
             search_terms = await self._generate_search_terms(scraped_data, sid)
             research_questions = await self._generate_research_questions(scraped_data, sid)
             
-            # Look up author profile
             author_username = scraped_data.main_post.username
             author_profile = await self.data_manager.get_user_profile(author_username)
             if author_profile:
@@ -219,11 +216,20 @@ class ScraperPipeline:
                 logger.info(f"No user profile found for {author_username} in database.")
             
             await self._save_results(scraped_data, url, search_terms, research_questions, sid, author_profile)
-        except ValueError as e:
-            logger.error(f"URL/Input error: {e}")
+        
+        except FetchError as e:
+            logger.error(f"Fetch error processing {url}: {e}")
+            # typer.echo is handled in _fetch_and_parse
+            return
+        except ParseError as e:
+            logger.error(f"Parse error processing {url}: {e}")
+            # typer.echo and _save_failed_html are handled in _fetch_and_parse
+            return
+        except ValueError as e: # Handles errors from _prepare_url
+            logger.error(f"URL/Input error for {url}: {e}")
             typer.echo(f"Error: {e}", err=True)
-        except Exception as e:
+            return
+        except Exception as e: # General catch-all for other unexpected errors
             logger.exception(f"Unexpected pipeline error for {url}: {e}")
-            typer.echo(f"Error: An unexpected error occurred: {e}", err=True)
-            if html_content and scraped_data is None:
-                await self._save_failed_html(sid, html_content)
+            typer.echo(f"Error: An unexpected error occurred processing {url}: {e}", err=True)
+            return

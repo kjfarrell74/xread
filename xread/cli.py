@@ -16,8 +16,25 @@ from xread.constants import FileFormats
 from xread.pipeline import ScraperPipeline
 from xread.ai_models import AIModelFactory  # late import to avoid circulars
 
+_interactive_mode_pipeline: Optional[ScraperPipeline] = None
+
 # --- CLI Application ---
 app = typer.Typer(name="xread", invoke_without_command=True, no_args_is_help=False)
+
+
+@app.callback(invoke_without_command=True)
+async def main_callback(ctx: typer.Context):
+    global _interactive_mode_pipeline
+
+    pipeline = ScraperPipeline()
+    await pipeline.data_manager.initialize() # Initialize data_manager
+
+    if ctx.invoked_subcommand is None:
+        # No command was specified by the user. Prepare for interactive mode.
+        _interactive_mode_pipeline = pipeline
+    else:
+        # A command is being run. Store pipeline in context for that command.
+        ctx.obj = pipeline
 
 
 async def run_interactive_mode_async(pipeline: ScraperPipeline) -> None:
@@ -112,27 +129,44 @@ async def run_interactive_mode_async(pipeline: ScraperPipeline) -> None:
 
 @app.command(name="scrape")
 async def scrape_command(
+    ctx: typer.Context,
     url: str = typer.Argument(..., help="Tweet/Nitter URL to scrape"),
-    model: str = typer.Option(
-        settings.ai_model_type,
+    model: Optional[str] = typer.Option(
+        None, # Default to None, so we know if the user specified it
         "--model",
         "-m",
-        help=f"AI model to use (supported: {', '.join(AIModelFactory.supported())})",
+        help=f"AI model to use (e.g., {', '.join(AIModelFactory.supported())}). Overrides .env. Default: {settings.ai_model_type}",
     ),
 ) -> None:
     """Scrape URL, process images, generate search terms, and save combined data."""
-    # override model type for this invocation
-    settings.ai_model_type = model
-    pipeline = ScraperPipeline()
-    await pipeline.data_manager.initialize()
-    logger.info(f"Scraping URL via command: {url} using model '{model}'")
-    await pipeline.run(url)
+    pipeline: ScraperPipeline = ctx.obj
+    original_env_model_type = settings.ai_model_type
+    user_specified_model = model is not None
+
+    if user_specified_model:
+        if model not in AIModelFactory.supported():
+            typer.echo(f"Error: Unsupported model '{model}'. Supported models are: {', '.join(AIModelFactory.supported())}")
+            raise typer.Exit(code=1)
+        settings.ai_model_type = model
+        if pipeline.ai_model and pipeline.ai_model.model_type_name != model:
+            pipeline.ai_model = None # Force re-creation with the new model type
+
+    logger.info(f"Scraping URL via command: {url} using model '{settings.ai_model_type}'")
+
+    try:
+        # Browser needs to be initialized for each scrape command run,
+        # as it's not persistent outside interactive mode or a single command context.
+        await pipeline.initialize_browser()
+        await pipeline.run(url)
+    finally:
+        await pipeline.close_browser()
+        if user_specified_model:
+            settings.ai_model_type = original_env_model_type
 
 
-@app.command(name="list")
-def list_posts(limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max posts to list.")) -> None:
-    """List saved post metadata."""
-    pipeline = ScraperPipeline()
+# Implementation for listing posts
+def _list_posts_impl(pipeline: ScraperPipeline, limit: Optional[int] = None) -> None:
+    """Internal implementation for listing saved post metadata."""
     logger.info(f"Listing posts with limit: {limit}")
     posts = pipeline.data_manager.list_meta(limit)
     if not posts:
@@ -152,19 +186,31 @@ def list_posts(limit: Optional[int] = typer.Option(None, "--limit", "-l", help="
     print("-------------------\n")
 
 
-@app.command(name="stats")
-def show_stats() -> None:
-    """Show count of saved posts."""
-    pipeline = ScraperPipeline()
+@app.command(name="list")
+def list_posts(ctx: typer.Context, limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max posts to list.")) -> None:
+    """List saved post metadata."""
+    pipeline: ScraperPipeline = ctx.obj
+    _list_posts_impl(pipeline, limit)
+
+
+# Implementation for showing stats
+def _show_stats_impl(pipeline: ScraperPipeline) -> None:
+    """Internal implementation for showing count of saved posts."""
     count = pipeline.data_manager.count()
     print(f"Total saved posts: {count}")
 
 
-@app.command(name="delete")
-async def delete_post(status_id: str = typer.Argument(..., help="Status ID to delete.")) -> None:
-    """Delete a saved post by status ID."""
-    pipeline = ScraperPipeline()
-    await pipeline.data_manager.initialize()
+@app.command(name="stats")
+def show_stats(ctx: typer.Context) -> None:
+    """Show count of saved posts."""
+    pipeline: ScraperPipeline = ctx.obj
+    _show_stats_impl(pipeline)
+
+
+# Implementation for deleting a post
+async def _delete_post_impl(pipeline: ScraperPipeline, status_id: str) -> None:
+    """Internal implementation for deleting a saved post by status ID."""
+    # await pipeline.data_manager.initialize() # Already initialized
     logger.info(f"Deleting post {status_id}")
     if await pipeline.data_manager.delete(status_id):
         print(f"Deleted post {status_id}.")
@@ -172,24 +218,34 @@ async def delete_post(status_id: str = typer.Argument(..., help="Status ID to de
         print(f"Could not delete post {status_id} (not found or error).")
 
 
+@app.command(name="delete")
+async def delete_post(ctx: typer.Context, status_id: str = typer.Argument(..., help="Status ID to delete.")) -> None:
+    """Delete a saved post by status ID."""
+    pipeline: ScraperPipeline = ctx.obj
+    await _delete_post_impl(pipeline, status_id)
+
+
 async def async_main() -> None:
     """Main async entry point."""
-    pipeline = ScraperPipeline()
-    is_interactive = len(sys.argv) <= 1 or sys.argv[1] not in app.registered_commands
+    global _interactive_mode_pipeline
     try:
-        await pipeline.data_manager.initialize()
-        if is_interactive:
-            await run_interactive_mode_async(pipeline)
-        else:
-            browser_needed = any(cmd_name in sys.argv for cmd_name in ['scrape'])
-            if browser_needed:
-                await pipeline.initialize_browser()
-            try:
-                app()
-            finally:
-                if browser_needed:
-                    await pipeline.close_browser()
+        # Typer's app() will call main_callback.
+        # If a command is given, it runs. main_callback sets ctx.obj.
+        # If no command, main_callback sets _interactive_mode_pipeline.
+        app()
+
+        # If _interactive_mode_pipeline is set, it means no command was run by Typer,
+        # so we should start the interactive mode.
+        if _interactive_mode_pipeline is not None:
+            await run_interactive_mode_async(_interactive_mode_pipeline)
+            _interactive_mode_pipeline = None # Clear it after use
+    except SystemExit:
+        # Allow SystemExit to propagate, often used by Typer for --help etc.
+        raise
     except Exception as e:
         logger.exception("Fatal error in main execution:")
         typer.echo(f"Fatal Error: {e}", err=True)
-        sys.exit(1)
+        # Ensure we exit with a non-zero code for unhandled exceptions,
+        # but not if it's a SystemExit (which might have code 0 for --help).
+        if not isinstance(e, SystemExit): # Typer might raise SystemExit for valid reasons
+            sys.exit(1)
