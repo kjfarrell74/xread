@@ -96,53 +96,66 @@ class ScraperPipeline:
 
     async def _process_media(self, scraped_data: ScrapedData, sid: str) -> None:
         """Process images in the scraped data if conditions are met."""
-        if not (self.ai_model and await self.ai_model.is_valid() and settings.max_image_downloads > 0):
-            logger.info("Image processing skipped (API invalid, model missing, or limit 0).")
+        if not (self.ai_model and settings.max_image_downloads > 0):
+            logger.info("Image processing skipped (AI model not configured or max_image_downloads is 0).")
             return
         
-        async with aiohttp.ClientSession() as session:
-            logger.info(f"Processing images for post {sid}...")
-            await self.ai_model.process_images(scraped_data.main_post, session, "post")
-            for reply in scraped_data.replies:
-                if self.ai_model.downloaded_count >= settings.max_image_downloads:
-                    break
-                await self.ai_model.process_images(reply, session, "reply")
+        try:
+            async with aiohttp.ClientSession() as session:
+                logger.info(f"Processing images for post {sid}...")
+                await self.ai_model.process_images(scraped_data.main_post, session, "post")
+                for reply in scraped_data.replies:
+                    if self.ai_model.downloaded_count >= settings.max_image_downloads:
+                        break
+                    await self.ai_model.process_images(reply, session, "reply")
+        except AIModelError as e:
+            logger.warning(f"AI image processing failed for post {sid}: {e}")
 
     async def _generate_search_terms(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
         """Generate search terms based on scraped text content."""
-        if not (self.ai_model and await self.ai_model.is_valid()):
-            logger.info("Search term generation skipped (API invalid or text model missing).")
-            return "Skipped: API invalid or text model missing."
+        if not self.ai_model:
+            logger.info("Search term generation skipped (AI model not available).")
+            return "Skipped: AI model not available."
 
         logger.info(f"Generating search terms for post {sid}...")
         full_text = scraped_data.get_full_text()
         if full_text.strip():
-            prompt = SEARCH_TERM_PROMPT.format(scraped_text=full_text)
-            search_terms = await self.ai_model.generate_text_native(
-                prompt, f"Search Term Generation (Post ID: {sid})"
-            )
-            if search_terms and (search_terms.startswith("Error:") or search_terms.startswith("Warning:")):
-                logger.warning(f"Gemini issue generating search terms for {sid}: {search_terms}")
-            return search_terms
+            try:
+                prompt = SEARCH_TERM_PROMPT.format(scraped_text=full_text)
+                search_terms = await self.ai_model.generate_text_native(
+                    prompt, f"Search Term Generation (Post ID: {sid})"
+                )
+                # The model methods now raise AIModelError instead of returning "Error:..."
+                # So, the check below might be less relevant unless the model can still return such strings for non-fatal warnings.
+                if search_terms and (search_terms.startswith("Error:") or search_terms.startswith("Warning:")):
+                     logger.warning(f"AI model returned a warning/error string for search terms for {sid}: {search_terms}")
+                return search_terms
+            except AIModelError as e:
+                logger.warning(f"AI search term generation failed for post {sid}: {e}")
+                return "Error: Search term generation failed."
         logger.warning(f"Post {sid} has no text content for search term generation.")
         return "Info: No text content provided for analysis."
 
     async def _generate_research_questions(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
         """Generate research questions based on scraped text content."""
-        if not (self.ai_model and await self.ai_model.is_valid()):
-            logger.info("Research questions generation skipped (API invalid or text model missing).")
-            return "Skipped: API invalid or text model missing."
+        if not self.ai_model:
+            logger.info("Research questions generation skipped (AI model not available).")
+            return "Skipped: AI model not available."
 
         logger.info(f"Generating research questions for post {sid}...")
         full_text = scraped_data.get_full_text()
         if full_text.strip():
-            prompt = RESEARCH_QUESTIONS_PROMPT.format(scraped_text=full_text)
-            research_questions = await self.ai_model.generate_text_native(
-                prompt, f"Research Questions Generation (Post ID: {sid})"
-            )
-            if research_questions and (research_questions.startswith("Error:") or research_questions.startswith("Warning:")):
-                logger.warning(f"Gemini issue generating research questions for {sid}: {research_questions}")
-            return research_questions
+            try:
+                prompt = RESEARCH_QUESTIONS_PROMPT.format(scraped_text=full_text)
+                research_questions = await self.ai_model.generate_text_native(
+                    prompt, f"Research Questions Generation (Post ID: {sid})"
+                )
+                if research_questions and (research_questions.startswith("Error:") or research_questions.startswith("Warning:")):
+                    logger.warning(f"AI model returned a warning/error string for research questions for {sid}: {research_questions}")
+                return research_questions
+            except AIModelError as e:
+                logger.warning(f"AI research questions generation failed for post {sid}: {e}")
+                return "Error: Research questions generation failed."
         logger.warning(f"Post {sid} has no text content for research questions generation.")
         return "Info: No text content provided for analysis."
 

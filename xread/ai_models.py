@@ -20,14 +20,11 @@ from xread.settings import settings, logger
 from xread.data_manager import DataManager
 from xread.models import Post
 from xread.utils import with_retry
+from xread.exceptions import AIModelError
 
 # ----------------------------------------------------------------------------
 # Generic interface / exceptions
 # ----------------------------------------------------------------------------
-
-
-class AIModelError(Exception):
-    """Raised when an AI model adapter encounters an unrecoverable error."""
 
 
 class BaseAIModel(ABC):
@@ -94,19 +91,19 @@ class GeminiModel(BaseAIModel):
         self, item: Post, session: aiohttp.ClientSession, item_type: str = "post"
     ) -> None:
         if not await self.is_valid():
-            return
+            raise AIModelError("Gemini model is not valid or API key issue.")
         await self._processor.process_images(item, session, item_type)
 
     async def generate_text_native(
         self, prompt: str, task_description: str
     ) -> Optional[str]:
         if not await self.is_valid():
-            return None
+            raise AIModelError("Gemini model is not valid or API key issue.")
         try:
             return await self._processor.generate_text_native(prompt, task_description)
         except GeminiApiError as e:
             logger.warning(f"Gemini error ({task_description}): {e}")
-            return f"Error: {e}"
+            raise AIModelError(f"Gemini API error during {task_description}: {e}") from e
 
     # ---------------- compatibility passthroughs ---------------- #
 
@@ -210,7 +207,9 @@ class ClaudeProcessor(BaseAIModel):
     async def process_images(
         self, item: Post, session: aiohttp.ClientSession, item_type: str = "post"
     ) -> None:
-        if not await self.is_valid() or not item.images:
+        if not await self.is_valid():
+            raise AIModelError("Claude model is not valid or API key issue.")
+        if not item.images:
             return
         for img in item.images:
             if self.downloaded_count >= self.max_downloads:
@@ -224,13 +223,13 @@ class ClaudeProcessor(BaseAIModel):
                 self.downloaded_count += 1
             except Exception as e:
                 logger.warning(f"Claude image error for {img.url}: {e}")
-                img.description = f"Error: {e}"
+                img.description = f"Error during Claude processing: {e}" # Updated error message
 
     async def generate_text_native(
         self, prompt: str, task_description: str
     ) -> Optional[str]:
         if not await self.is_valid():
-            return None
+            raise AIModelError("Claude model is not valid or API key issue.")
         try:
             resp = await self._client.messages.create(
                 model=self.model_name,
@@ -239,10 +238,14 @@ class ClaudeProcessor(BaseAIModel):
             )
             if resp.content:
                 return resp.content[0].text.strip()
-            return "Error: empty Claude response"
+            # This case should ideally raise an error too if an empty response is unexpected.
+            # For now, adhering to the instruction to change the except block primarily.
+            # Consider raising AIModelError("Claude API returned an empty response") here.
+            logger.warning(f"Claude API returned an empty response for {task_description}")
+            return "Error: empty Claude response" 
         except Exception as e:
             logger.error(f"Claude text generation failed ({task_description}): {e}")
-            return f"Error: {e}"
+            raise AIModelError(f"Claude API error during {task_description}: {e}") from e
 
 
 # ----------------------------------------------------------------------------
