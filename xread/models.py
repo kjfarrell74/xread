@@ -23,6 +23,10 @@ class Post:
     permalink: str
     images: List[Image] = field(default_factory=list)
     status_id: Optional[str] = None
+    likes: Optional[int] = 0
+    retweets: Optional[int] = 0
+    replies_count: Optional[int] = 0
+    topic_tags: Optional[List[str]] = field(default_factory=list)
 
     def __post_init__(self):
         if self.permalink and self.permalink != "N/A":
@@ -40,6 +44,8 @@ class ScrapedData:
     """Holds the main post and its replies after scraping."""
     main_post: Post
     replies: List[Post]
+    factual_context: Optional[str] = None
+    source: Optional[str] = None
 
     def get_full_text(self) -> str:
         """Combine main post text and reply texts into a single string."""
@@ -71,4 +77,14 @@ class UserProfile:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert UserProfile to a JSON-serializable dictionary."""
+        return asdict(self)
+
+@dataclass
+class AuthorNote:
+    """Represents an author note with username and content."""
+    username: str
+    note_content: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert AuthorNote to a JSON-serializable dictionary."""
         return asdict(self)

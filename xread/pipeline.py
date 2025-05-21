@@ -20,6 +20,7 @@ from xread.scraper import NitterScraper
 from xread.data_manager import DataManager
 # No AI model factory or base classes needed as Perplexity is directly integrated.
 from xread.browser import BrowserManager
+from xread.json_upgrader import upgrade_perplexity_json
 
 class ScraperPipeline:
     """Orchestrates scraping, processing, generating search terms, and saving data."""
@@ -464,7 +465,45 @@ class ScraperPipeline:
             else:
                 logger.info(f"No user profile found for {author_username} in database.")
 
+            # --- Integration of JSON upgrade ---
+            # Convert ScrapedData to dict for upgrading
+            scraped_data_dict = {
+                "main_post": scraped_data.main_post.__dict__,
+                "replies": [reply.__dict__ for reply in scraped_data.replies],
+                "perplexity_report": perplexity_report,
+                "scrape_date": datetime.now(timezone.utc).isoformat(),
+                "source": None,  # Could extract from URL or elsewhere
+                "topic_tags": scraped_data.main_post.topic_tags or []
+            }
+
+            # Perform upgrade
+            upgraded_data = upgrade_perplexity_json(scraped_data_dict)
+
+            # Update scraped_data with upgraded data
+            # Update main_post fields
+            for key, value in upgraded_data.get("main_post", {}).items():
+                setattr(scraped_data.main_post, key, value)
+
+            # Update replies
+            scraped_data.replies = []
+            for reply_dict in upgraded_data.get("replies", []):
+                # Ensure reply dates and engagement metrics are set properly
+                if 'date' not in reply_dict or not reply_dict['date']:
+                    reply_dict['date'] = ''
+                for metric in ['likes', 'retweets', 'replies_count']:
+                    if metric not in reply_dict or reply_dict.get(metric) in [0, '0', None]:
+                        reply_dict[metric] = None
+                # Create Post objects for replies
+                reply_post = Post(**reply_dict)
+                scraped_data.replies.append(reply_post)
+
+            # Update factual_context and source in ScrapedData
+            scraped_data.factual_context = upgraded_data.get("factual_context", None)
+            scraped_data.source = upgraded_data.get("scrape_meta", {}).get("source", None)
+
+            # Save results with upgraded data
             await self._save_results(scraped_data, url, perplexity_report, sid, author_profile, url_sid)
+
         except ValueError as e:
             logger.error(f"URL/Input error: {e}")
             typer.echo(f"Error: {e}", err=True)

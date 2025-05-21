@@ -8,7 +8,7 @@ import aiofiles
 from datetime import datetime, timezone
 
 from xread.settings import settings, logger
-from xread.models import ScrapedData, Post, Image
+from xread.models import ScrapedData, Post, Image, AuthorNote, UserProfile # Import AuthorNote and UserProfile
 
 class DataManager:
     """Handles saving and loading scraped data to/from the database."""
@@ -39,7 +39,7 @@ class DataManager:
             raise  # Propagate error
 
     def _initialize_db(self) -> None:
-        """Create database tables if they don't exist."""
+        """Create database tables if they don't exist and perform migrations."""
         if not self.conn:
             raise ConnectionError("Database not connected.")
         cursor = self.conn.cursor()
@@ -57,9 +57,32 @@ class DataManager:
                     original_url TEXT,
                     scrape_date TEXT,
                     suggested_search_terms TEXT,
-                    research_questions TEXT
+                    research_questions TEXT,
+                    perplexity_report TEXT
                 )
             ''')
+
+            # Check and add new columns to posts table if they don't exist
+            cursor.execute("PRAGMA table_info(posts)")
+            columns = [column[1] for column in cursor.fetchall()]
+
+            new_columns = {
+                'likes': 'INTEGER DEFAULT 0',
+                'retweets': 'INTEGER DEFAULT 0',
+                'replies_count': 'INTEGER DEFAULT 0',
+                'topic_tags': 'TEXT', # Stored as JSON string
+                'factual_context': 'TEXT',
+                'source': 'TEXT'
+            }
+
+            for col_name, col_type in new_columns.items():
+                if col_name not in columns:
+                    try:
+                        cursor.execute(f"ALTER TABLE posts ADD COLUMN {col_name} {col_type}")
+                        logger.info(f"Added column '{col_name}' to 'posts' table.")
+                    except sqlite3.Error as e:
+                        logger.error(f"Error adding column '{col_name}' to 'posts' table: {e}")
+                        # Depending on severity, you might want to raise or handle differently
 
             # Replies table
             cursor.execute('''
@@ -68,8 +91,7 @@ class DataManager:
                     post_status_id TEXT NOT NULL,
                     status_id TEXT UNIQUE,
                     user TEXT,
-                    username TEXT,
-                    text TEXT,
+                    username TEXT TEXT,
                     date TEXT,
                     permalink TEXT UNIQUE,
                     images_json TEXT,
@@ -100,10 +122,19 @@ class DataManager:
                     join_date TEXT
                 )
             ''')
+
+            # Author notes table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS author_notes (
+                    username TEXT PRIMARY KEY,
+                    note_content TEXT
+                )
+            ''')
+
             self.conn.commit()
-            logger.info("Database tables ensured.")
+            logger.info("Database tables and schema migrations ensured.")
         except sqlite3.Error as e:
-            logger.error(f"Error initializing database tables: {e}")
+            logger.error(f"Error initializing database tables or performing migrations: {e}")
             self.conn.rollback()
         finally:
             cursor.close()
@@ -148,6 +179,44 @@ class DataManager:
 
     # Removed _save_index as it's no longer needed with DB storage
 
+    async def get_user_profile(self, username: str) -> Optional['UserProfile']:
+        """Fetch a user profile from the database by username."""
+        if not self.conn:
+            logger.error("Database not connected. Cannot fetch user profile.")
+            return None
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT * FROM user_profiles WHERE username = ?",
+                (username,)
+            )
+            row = cursor.fetchone()
+            if row:
+                from xread.models import UserProfile  # Local import to avoid circular import
+                return UserProfile(
+                    username=row["username"],
+                    display_name=row["display_name"],
+                    bio=row["bio"],
+                    location=row["location"],
+                    website=row["website"],
+                    profile_image_url=row["profile_image_url"],
+                    followers_count=row["followers_count"],
+                    following_count=row["following_count"],
+                    join_date=row["join_date"]
+                )
+            else:
+                return None
+        except Exception as e:
+            logger.error(f"Error fetching user profile for {username}: {e}")
+            return None
+        finally:
+            cursor.close()
+
+    def _ensure_scalar(self, value):
+        if isinstance(value, (list, dict)):
+            return json.dumps(value)
+        return value
+
     async def save(
         self,
         data: ScrapedData,
@@ -178,63 +247,56 @@ class DataManager:
         try:
             scrape_date = datetime.now(timezone.utc).isoformat()
             images_json = json.dumps([img.__dict__ for img in data.main_post.images])
-            # Check if we need to alter the table to replace search_terms and research_questions with perplexity_report
+
+            # Defensive serialization of topic_tags
+            topic_tags_value = data.main_post.topic_tags
             try:
-                cursor.execute("PRAGMA table_info(posts)")
-                columns = [column[1] for column in cursor.fetchall()]
+                # Always serialize to JSON string, even if already a string
+                if isinstance(topic_tags_value, str):
+                    # Try to load and re-dump to ensure valid JSON string
+                    try:
+                        loaded = json.loads(topic_tags_value)
+                        topic_tags_serialized = json.dumps(loaded)
+                    except Exception:
+                        # If not valid JSON, wrap in a list and dump
+                        topic_tags_serialized = json.dumps([topic_tags_value])
+                else:
+                    topic_tags_serialized = json.dumps(topic_tags_value if topic_tags_value is not None else [])
+            except Exception as e:
+                logger.error(f"Error serializing topic_tags for post {sid}: {e}. Defaulting to empty list.")
+                topic_tags_serialized = json.dumps([])
 
-                if "perplexity_report" not in columns:
-                    # Add new column and remove old ones in a transaction
-                    cursor.execute("BEGIN TRANSACTION")
-                    cursor.execute("ALTER TABLE posts ADD COLUMN perplexity_report TEXT")
-                    cursor.execute("PRAGMA foreign_keys=off")
+            # Log topic_tags type and value for debugging
+            logger.debug(f"Saving post {sid} with topic_tags type: {type(topic_tags_value)} and value: {topic_tags_value}")
 
-                    # Create temp table with new structure
-                    cursor.execute('''
-                        CREATE TABLE posts_new (
-                            status_id TEXT PRIMARY KEY,
-                            author TEXT,
-                            username TEXT,
-                            text TEXT,
-                            date TEXT,
-                            permalink TEXT UNIQUE,
-                            images_json TEXT,
-                            original_url TEXT,
-                            scrape_date TEXT,
-                            perplexity_report TEXT
-                        )
-                    ''')
-
-                    # Copy data from old table to new table
-                    cursor.execute('''
-                        INSERT INTO posts_new
-                        SELECT status_id, author, username, text, date, permalink, images_json, original_url, scrape_date, NULL as perplexity_report
-                        FROM posts
-                    ''')
-
-                    # Drop old table and rename new one
-                    cursor.execute("DROP TABLE posts")
-                    cursor.execute("ALTER TABLE posts_new RENAME TO posts")
-                    cursor.execute("PRAGMA foreign_keys=on")
-                    cursor.execute("COMMIT")
-
-                    logger.info("Database schema updated to use perplexity_report instead of search terms and research questions")
-
-                cursor.execute(
-                    "INSERT INTO posts (status_id, author, username, text, date, permalink, images_json, original_url, scrape_date, perplexity_report) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (sid, data.main_post.user, data.main_post.username, data.main_post.text, data.main_post.date,
-                     data.main_post.permalink, images_json, original_url, scrape_date, perplexity_report)
+            # Insert into posts table with new columns
+            cursor.execute(
+                """
+                INSERT INTO posts (
+                    status_id, author, username, text, date, permalink, images_json, 
+                    original_url, scrape_date, perplexity_report, likes, retweets, 
+                    replies_count, topic_tags, factual_context, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sid,
+                    data.main_post.user,
+                    data.main_post.username,
+                    data.main_post.text,
+                    data.main_post.date,
+                    data.main_post.permalink,
+                    images_json,
+                    original_url,
+                    scrape_date,
+                    self._ensure_scalar(perplexity_report),
+                    data.main_post.likes,
+                    data.main_post.retweets,
+                    data.main_post.replies_count,
+                    self._ensure_scalar(topic_tags_serialized),
+                    self._ensure_scalar(data.factual_context),
+                    self._ensure_scalar(data.source)
                 )
-            except sqlite3.Error as e:
-                logger.error(f"Error updating database schema: {e}")
-                self.conn.rollback()
-
-                # Fall back to old schema if migration failed
-                cursor.execute(
-                    "INSERT INTO posts (status_id, author, username, text, date, permalink, images_json, original_url, scrape_date, suggested_search_terms, research_questions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (sid, data.main_post.user, data.main_post.username, data.main_post.text, data.main_post.date,
-                     data.main_post.permalink, images_json, original_url, scrape_date, None, perplexity_report)
-                )
+            )
 
             for reply in data.replies:
                 reply_images_json = json.dumps([img.__dict__ for img in reply.images])
@@ -262,7 +324,9 @@ class DataManager:
                 "original_url": original_url,
                 "scrape_date": scrape_date,
                 "perplexity_report": perplexity_report,
-                "author_profile": author_profile.to_dict() if author_profile else None
+                "author_profile": author_profile.to_dict() if author_profile else None,
+                "factual_context": data.factual_context, # Add factual_context to JSON
+                "source": data.source # Add source to JSON
             }
             json_file_path = self.data_dir / 'scraped_data' / f'post_{sid}.json'
             json_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -282,215 +346,3 @@ class DataManager:
         except IOError as e:
             logger.error(f"Error saving post {sid} to JSON file: {e}")
             return sid  # Return sid even if JSON save fails, since DB save succeeded
-
-    async def load_post_data(self, status_id: str) -> Optional[ScrapedData]:
-        """Load scraped data from the database for a given status_id."""
-        if not self.conn:
-            logger.error("Database not connected. Cannot load data.")
-            return None
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute("SELECT * FROM posts WHERE status_id = ?", (status_id,))
-            main_post_row = cursor.fetchone()
-            if not main_post_row:
-                logger.warning(f"Post not found in database for ID: {status_id}")
-                return None
-
-            main_post_images = [Image(**img_dict) for img_dict in json.loads(main_post_row['images_json'] or '[]')]
-            main_post = Post(
-                status_id=main_post_row['status_id'],
-                user=main_post_row['author'],
-                username=main_post_row['username'],
-                text=main_post_row['text'],
-                date=main_post_row['date'],
-                permalink=main_post_row['permalink'],
-                images=main_post_images
-            )
-
-            cursor.execute("SELECT * FROM replies WHERE post_status_id = ?", (status_id,))
-            reply_rows = cursor.fetchall()
-            replies: List[Post] = []
-            for reply_row in reply_rows:
-                reply_images = [Image(**img_dict) for img_dict in json.loads(reply_row['images_json'] or '[]')]
-                reply = Post(
-                    status_id=reply_row['status_id'],
-                    user=reply_row['user'],
-                    username=reply_row['username'],
-                    text=reply_row['text'],
-                    date=reply_row['date'],
-                    permalink=reply_row['permalink'],
-                    images=reply_images
-                )
-                replies.append(reply)
-
-            logger.info(f"Loaded scraped data from DB for ID: {status_id}")
-            return ScrapedData(main_post=main_post, replies=replies)
-        except sqlite3.Error as e:
-            logger.error(f"Error loading post {status_id} from database: {e}")
-            return None
-        except json.JSONDecodeError as e:
-            logger.error(f"Error decoding JSON for post {status_id} from database: {e}")
-            return None
-        finally:
-            cursor.close()
-
-    def list_meta(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """List saved post metadata, sorted by scrape date (descending)."""
-        if not self.conn:
-            logger.warning("Database connection not available. Attempting to reconnect.")
-            self.conn = self._connect_db()
-            if not self.conn:
-                logger.error("Failed to reconnect to database. Cannot list metadata.")
-                return []
-            # Ensure database tables exist after reconnecting
-            self._initialize_db()
-        cursor = self.conn.cursor()
-        try:
-            query = "SELECT status_id, author, username, text, date, permalink, scrape_date FROM posts ORDER BY scrape_date DESC"
-            if limit is not None:
-                query += f" LIMIT {limit}"
-            cursor.execute(query)
-            rows = cursor.fetchall()
-            posts = [
-                {
-                    'status_id': row['status_id'],
-                    'author': row['author'],
-                    'username': row['username'],
-                    'text': row['text'],
-                    'date': row['date'],
-                    'permalink': row['permalink'],
-                    'scrape_date': row['scrape_date']
-                }
-                for row in rows
-            ]
-            logger.info(f"Listed {len(posts)} posts from database.")
-            return posts
-        except sqlite3.Error as e:
-            logger.error(f"Error listing posts from database: {e}")
-            return []
-        finally:
-            cursor.close()
-
-    def count(self) -> int:
-        """Return total number of saved posts."""
-        if not self.conn:
-            logger.warning("Database connection not available. Attempting to reconnect.")
-            self.conn = self._connect_db()
-            if not self.conn:
-                logger.error("Failed to reconnect to database. Cannot count posts.")
-                return 0
-            # Ensure database tables exist after reconnecting
-            self._initialize_db()
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute("SELECT COUNT(*) as count FROM posts")
-            row = cursor.fetchone()
-            count = row['count'] if row else 0
-            logger.info(f"Counted {count} posts in database.")
-            return count
-        except sqlite3.Error as e:
-            logger.error(f"Error counting posts in database: {e}")
-            return 0
-        finally:
-            cursor.close()
-
-    async def save_user_profile(self, profile: 'UserProfile') -> bool:
-        """Save or update a user profile in the database."""
-        if not self.conn:
-            logger.error("Database not connected. Cannot save user profile.")
-            return False
-
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute(
-                """
-                INSERT INTO user_profiles (
-                    username, display_name, bio, location, website, 
-                    profile_image_url, followers_count, following_count, join_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(username) DO UPDATE SET
-                    display_name = excluded.display_name,
-                    bio = excluded.bio,
-                    location = excluded.location,
-                    website = excluded.website,
-                    profile_image_url = excluded.profile_image_url,
-                    followers_count = excluded.followers_count,
-                    following_count = excluded.following_count,
-                    join_date = excluded.join_date
-                """,
-                (
-                    profile.username, profile.display_name, profile.bio, profile.location,
-                    profile.website, profile.profile_image_url, profile.followers_count,
-                    profile.following_count, profile.join_date
-                )
-            )
-            self.conn.commit()
-            logger.info(f"Saved/Updated user profile for {profile.username} in database.")
-            return True
-        except sqlite3.Error as e:
-            logger.error(f"Error saving user profile for {profile.username}: {e}")
-            self.conn.rollback()
-            return False
-        finally:
-            cursor.close()
-
-    async def get_user_profile(self, username: str) -> Optional['UserProfile']:
-        """Retrieve a user profile from the database by username."""
-        if not self.conn:
-            logger.error("Database not connected. Cannot retrieve user profile.")
-            return None
-
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute("SELECT * FROM user_profiles WHERE username = ?", (username,))
-            row = cursor.fetchone()
-            if not row:
-                logger.info(f"No user profile found for {username}.")
-                return None
-
-            from xread.models import UserProfile
-            profile = UserProfile(
-                username=row['username'],
-                display_name=row['display_name'],
-                bio=row['bio'],
-                location=row['location'],
-                website=row['website'],
-                profile_image_url=row['profile_image_url'],
-                followers_count=row['followers_count'],
-                following_count=row['following_count'],
-                join_date=row['join_date']
-            )
-            logger.info(f"Retrieved user profile for {username} from database.")
-            return profile
-        except sqlite3.Error as e:
-            logger.error(f"Error retrieving user profile for {username}: {e}")
-            return None
-        finally:
-            cursor.close()
-
-    async def delete(self, status_id: str) -> bool:
-        """Delete a saved post by status ID."""
-        if not self.conn:
-            logger.warning("Database connection not available. Attempting to reconnect.")
-            self.conn = self._connect_db()
-            if not self.conn:
-                logger.error("Failed to reconnect to database. Cannot delete post.")
-                return False
-            # Ensure database tables exist after reconnecting
-            self._initialize_db()
-        if status_id not in self.seen:
-            logger.warning(f"Post {status_id} not found.")
-            return False
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute("DELETE FROM posts WHERE status_id = ?", (status_id,))
-            self.conn.commit()
-            self.seen.discard(status_id)
-            logger.info(f"Deleted post {status_id} from database.")
-            return True
-        except sqlite3.Error as e:
-            logger.error(f"Error deleting post {status_id} from database: {e}")
-            self.conn.rollback()
-            return False
-        finally:
-            cursor.close()

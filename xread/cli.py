@@ -27,7 +27,7 @@ async def run_interactive_mode_async(pipeline: ScraperPipeline) -> None:
     print("  help, list [limit], stats, delete <id>, quit")
 
     commands = [
-        'scrape', 'list', 'stats', 'delete', 'help', 'quit', 'exit'
+        'scrape', 'list', 'stats', 'delete', 'help', 'quit', 'exit', 'add-note', 'view-note'
     ]
     command_completer = WordCompleter(commands, ignore_case=True)
     history = FileHistory(str(settings.data_dir / FileFormats.HISTORY_FILE))
@@ -61,6 +61,8 @@ async def run_interactive_mode_async(pipeline: ScraperPipeline) -> None:
                 print("  list [limit]               List saved post metadata.")
                 print("  stats                      Show count of saved posts.")
                 print("  delete <id>                Delete a saved post by status ID.")
+                print("  add-note <username> <note> Add or update an author note.")
+                print("  view-note <username>       View an author note.")
                 print("  help                       Show this help message.")
                 print("  quit / exit                Exit the application.\n")
             elif cmd == "list":
@@ -78,6 +80,30 @@ async def run_interactive_mode_async(pipeline: ScraperPipeline) -> None:
                     await delete_post(delete_id)
                 else:
                     print("Usage: delete <status_id>")
+            elif cmd == "add-note":
+                args = args_str.split(maxsplit=1)
+                if len(args) < 2:
+                    print("Usage: add-note <username> <note>")
+                    continue
+                username, note = args[0], args[1]
+                author_note = AuthorNote(username=username, note_content=note)
+                await pipeline.data_manager.initialize()
+                success = await pipeline.data_manager.save_author_note(author_note)
+                if success:
+                    print(f"Author note saved for {username}.")
+                else:
+                    print(f"Failed to save author note for {username}.")
+            elif cmd == "view-note":
+                username = args_str.strip()
+                if not username:
+                    print("Usage: view-note <username>")
+                    continue
+                await pipeline.data_manager.initialize()
+                author_note = await pipeline.data_manager.get_author_note(username)
+                if author_note:
+                    print(f"Author note for {username}: {author_note.note_content}")
+                else:
+                    print(f"No author note found for {username}.")
             elif cmd == "scrape":
                 url_to_scrape = args_str.strip()
                 if url_to_scrape:
