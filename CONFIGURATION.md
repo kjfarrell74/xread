@@ -1,73 +1,53 @@
-# XReader Configuration Guide
+# XReader Configuration
 
-This document details the configuration options for XReader, an asynchronous CLI tool for scraping tweet data from a Nitter instance, generating factual reports using the Perplexity AI API, and saving the combined data. Configuration is managed through the `.env` file for environment variables and basic settings.
+XReader can be configured using environment variables, typically set in a `.env` file. This document outlines the available configuration options and how to set them up.
 
-## Table of Contents
+## Environment Variables
 
-- [Overview](#overview)
-- [Environment Variables (`.env`)](#environment-variables-env)
-  - [API Keys](#api-keys)
-  - [General Configuration](#general-configuration)
-  - [Model Selection](#model-selection)
-- [Applying Configuration Changes](#applying-configuration-changes)
+Environment variables are the primary method for configuring XReader. You can set these variables in a `.env` file in the project root directory or directly in your shell environment.
 
-## Overview
+### Creating a `.env` File
 
-XReader's behavior can be tailored to meet specific needs through its configuration file. The `.env` file handles essential settings like API keys, data storage paths, and operational limits. The Perplexity AI API is used to generate factual reports from the content of Twitter/X posts. Understanding and adjusting these settings can optimize XReader for tasks such as fact-checking, contextual analysis, or data collection.
+1. Copy the `.env.example` file to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+2. Edit the `.env` file to set your specific values for API keys and other configurations.
 
-## Environment Variables (`.env`)
+### Key Environment Variables
 
-The `.env` file is used to set environment variables that control XReader's core functionality. It is loaded at startup and defines API access, data storage locations, and operational constraints. Below are the available settings, grouped by category.
+- **PERPLEXITY_API_KEY**: Your API key for accessing the Perplexity AI API. This is required for generating factual reports on scraped social media data.
+  - Example: `PERPLEXITY_API_KEY=pplx-your-api-key-here`
+- **DATA_DIR**: Directory where scraped data and metadata will be stored. Defaults to `scraped_data`.
+  - Example: `DATA_DIR=scraped_data`
+- **DEBUG_DIR**: Directory for storing debug information like failed HTML parses. Defaults to `debug_output`.
+  - Example: `DEBUG_DIR=debug_output`
+- **NITTER_INSTANCE**: The Nitter instance URL to use for scraping Twitter/X data. Choose a reliable instance.
+  - Example: `NITTER_INSTANCE=https://nitter.net`
+- **SAVE_FAILED_HTML**: Whether to save HTML content when parsing fails, useful for debugging. Set to `true` or `false`. Defaults to `true`.
+  - Example: `SAVE_FAILED_HTML=true`
 
-### API Keys
+### Loading Environment Variables
 
-- **`PERPLEXITY_API_KEY`**
-  - **Description**: Your Perplexity AI API key, required for generating factual reports from post content.
-  - **Default**: `your_perplexity_api_key_here` (placeholder, must be replaced with a valid key)
-  - **Example**: `PERPLEXITY_API_KEY=pplx-...yourkey...`
-  - **Notes**: If not set or invalid, report generation will be disabled. You can obtain a key from the Perplexity AI dashboard.
+If you use a `.env` file, the `run.sh` script will automatically load these variables. Alternatively, you can set them directly in your shell before running the application:
 
+```bash
+export PERPLEXITY_API_KEY=pplx-your-api-key-here
+python xread.py
+```
 
-### General Configuration
+## AI Model Configuration
 
-- **`DATA_DIR`**
-  - **Description**: Directory path where scraped data, post JSON files, and caches are stored.
-  - **Default**: `scraped_data`
-  - **Example**: `DATA_DIR=my_custom_data_folder`
-  - **Notes**: This directory will be created if it doesn't exist. Ensure write permissions are available.
+XReader currently supports the Perplexity AI model for report generation. The architecture is designed to be extensible for additional AI models in the future. The API key for Perplexity AI must be set via the `PERPLEXITY_API_KEY` environment variable as described above.
 
-- **`NITTER_BASE_URL`**
-  - **Description**: The base URL of the Nitter instance to use for scraping tweets.
-  - **Default**: `https://nitter.net`
-  - **Example**: `NITTER_BASE_URL=https://nitter.example.com`
-  - **Notes**: Choose a reliable Nitter instance to avoid rate limiting or downtime. URLs from Twitter or X.com are normalized to this instance.
+## Data Enhancement Configuration
 
-- **`MAX_IMAGE_DOWNLOADS_PER_RUN`**
-  - **Description**: Maximum number of images to download and describe per scraping run.
-  - **Default**: `5`
-  - **Example**: `MAX_IMAGE_DOWNLOADS_PER_RUN=10`
-  - **Notes**: Set to `0` to disable image processing. Higher values may increase API usage and risk rate limiting.
+XReader uses a centralized data enhancement module (`xread/data_enhancer.py`) to enrich scraped data with normalized dates, media flags, and image descriptions. No additional configuration is required for this module, but ensure that dependencies like `python-dateutil` and `Pillow` are installed via `requirements.txt`.
 
-- **`SAVE_FAILED_HTML`**
-  - **Description**: Whether to save HTML content to `debug_output` when parsing fails, useful for troubleshooting.
-  - **Default**: `true`
-  - **Example**: `SAVE_FAILED_HTML=false`
-  - **Notes**: Enable this to diagnose scraping issues. Files are saved with a timestamp and status ID if available.
+## Troubleshooting Configuration Issues
 
-### Model Selection
+- **Missing API Key**: If you encounter errors related to authentication with Perplexity AI, ensure that `PERPLEXITY_API_KEY` is correctly set in your `.env` file or environment.
+- **Invalid Nitter Instance**: If scraping fails, verify that the `NITTER_INSTANCE` URL is operational. You may need to switch to a different instance if the current one is down.
+- **File Permission Issues**: Ensure that the directories specified in `DATA_DIR` and `DEBUG_DIR` have the necessary write permissions for storing data.
 
-- **`PERPLEXITY_MODEL`**
-  - **Description**: The Perplexity AI model to use for generating factual reports.
-  - **Default**: `sonar-pro`
-  - **Example**: `PERPLEXITY_MODEL=sonar-pro`
-  - **Notes**: Currently hardcoded to `sonar-pro` in the application code. Future updates may allow customizing this model through the configuration.
-
-
-## Applying Configuration Changes
-
-- **`.env` Changes**: Modifications to `.env` require restarting XReader as these variables are loaded only at startup. After editing, relaunch the tool to apply changes:
-  ```bash
-  python xread.py
-  ```
-
-By carefully configuring these settings, XReader can be adapted to various use cases, from casual data collection to rigorous academic research or journalistic fact-checking. For general usage instructions, refer to [USAGE.md](USAGE.md), and for project overview or troubleshooting, see [README.md](README.md).
+For further assistance or to suggest additional configuration options, please refer to the [CONTRIBUTING.md](CONTRIBUTING.md) guide.

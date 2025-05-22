@@ -9,8 +9,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Set environment variable
-os.environ["PERPLEXITY_API_KEY"] = "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"
+# Ensure environment variable is set (should be set externally or in a .env file)
+if not os.getenv("PERPLEXITY_API_KEY"):
+    raise ValueError("PERPLEXITY_API_KEY environment variable is not set. Please set it before running the test.")
 
 from xread.pipeline import ScraperPipeline  # Import after setting environment variable
 

@@ -18,7 +18,7 @@ from xread.constants import ErrorMessages, FileFormats, PERPLEXITY_REPORT_PROMPT
 from xread.models import ScrapedData, Post
 from xread.scraper import NitterScraper
 from xread.data_manager import DataManager
-# No AI model factory or base classes needed as Perplexity is directly integrated.
+from xread.ai_models import PerplexityModel
 from xread.browser import BrowserManager
 from xread.json_upgrader import upgrade_perplexity_json
 from xread.utils import play_ding
@@ -30,6 +30,7 @@ class ScraperPipeline:
         self.data_manager = DataManager()
         self.browser_manager = BrowserManager()
         self._browser_ready = False
+        self.perplexity_model = PerplexityModel()
 
     async def initialize_browser(self) -> None:
         """Launch the Playwright browser if not already started."""
@@ -42,7 +43,6 @@ class ScraperPipeline:
         if self._browser_ready:
             await self.browser_manager.__aexit__(None, None, None)
             self._browser_ready = False
-
 
     async def _save_failed_html(self, sid: Optional[str], html: Optional[str]) -> None:
         """Save fetched HTML content to a debug file if parsing fails."""
@@ -110,272 +110,9 @@ class ScraperPipeline:
             except Exception as e:
                 logger.warning(f"Error closing page: {e}")
 
-    async def _process_images_perplexity(self, scraped_data: ScrapedData, sid: str) -> List[Dict[str, Any]]:
-        """Process images for use with Perplexity AI API."""
-        api_key = os.getenv("PERPLEXITY_API_KEY")
-        if not api_key:
-            logger.error("Perplexity API key not found in environment variables.")
-            return []
-            
-        # List to store base64-encoded images
-        processed_images = []
-        
-        logger.info(f"Processing images for post {sid} to include in Perplexity prompt...")
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                # Process images from the main post
-                main_post_images = await self._download_and_encode_images(scraped_data.main_post, session)
-                processed_images.extend(main_post_images)
-                
-                # Process images from all replies for comprehensive analysis
-                for reply in scraped_data.replies:
-                    reply_images = await self._download_and_encode_images(reply, session)
-                    processed_images.extend(reply_images)
-
-                    # Limit total number of images to avoid making prompt too large, but increase the limit
-                    if len(processed_images) >= 10:  # Increased from 4 to 10 for more comprehensive image analysis
-                        logger.info(f"Reached maximum number of images for Perplexity (10). Skipping remaining images.")
-                        break
-            
-            logger.info(f"Processed {len(processed_images)} images for Perplexity API")
-        except Exception as e:
-            logger.error(f"Error processing images for Perplexity: {e}")
-            logger.info("Proceeding with text content only for Perplexity report generation.")
-            processed_images = []
-            
-        return processed_images
-
-    async def _download_and_encode_images(self, post: Post, session: aiohttp.ClientSession) -> List[Dict[str, Any]]:
-        """Download images and encode them for use with Perplexity API."""
-        image_data_list = []
-
-        for img in post.images:
-            # Make sure we have a valid URL - sometimes Nitter URLs need modification
-            image_url = img.url
-            if "nitter.net/pic/" in image_url:
-                # Handle Nitter URLs which may need special processing
-                logger.info(f"Detected Nitter image URL: {image_url}")
-                # Some Nitter instances use this format
-                if "%2F" in image_url:
-                    # URL decode the path
-                    from urllib.parse import unquote
-                    decoded_url = unquote(image_url)
-                    logger.info(f"Decoded Nitter URL: {decoded_url}")
-                    image_url = decoded_url
-
-            logger.info(f"Downloading image: {image_url}")
-
-            try:
-                async with asyncio.timeout(20):  # Increase timeout for image download
-                    # Try multiple ways to download the image
-                    try:
-                        async with session.get(image_url, allow_redirects=True) as resp:
-                            if resp.status != 200:
-                                logger.warning(f"Failed to download image {image_url}, status: {resp.status}, trying alternate methods...")
-                                # If this fails, we'll try other methods below
-                                raise aiohttp.ClientError(f"Failed with status {resp.status}")
-
-                            content = await resp.read()
-                    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                        logger.warning(f"Primary download method failed: {e}, trying alternate method...")
-                        # Some Nitter images require a different approach
-                        # Try a direct media URL if possible
-                        if "nitter.net/pic/orig/media" in image_url:
-                            # Try to extract the media path and construct a direct URL
-                            import re
-                            media_match = re.search(r'media%2F([^\.]+\.[^\.]+)', image_url)
-                            if media_match:
-                                media_id = media_match.group(1)
-                                alternate_url = f"https://pbs.twimg.com/media/{media_id}"
-                                logger.info(f"Trying alternate URL: {alternate_url}")
-
-                                async with session.get(alternate_url, allow_redirects=True) as alt_resp:
-                                    if alt_resp.status != 200:
-                                        logger.warning(f"Alternate download failed: {alternate_url}, status: {alt_resp.status}")
-                                        continue
-
-                                    content = await alt_resp.read()
-                            else:
-                                logger.warning(f"Could not extract media ID from URL: {image_url}")
-                                continue
-                        else:
-                            logger.warning(f"No alternate method available for {image_url}")
-                            continue
-
-                    # Skip if image is too large (10MB limit)
-                    if len(content) > 10 * 1024 * 1024:
-                        logger.warning(f"Image {image_url} too large (> 10MB), skipping")
-                        continue
-
-                    # Determine the mime type
-                    mime_type, _ = mimetypes.guess_type(img.url)
-                    mime_type = mime_type if mime_type and mime_type.startswith('image/') else "image/jpeg"
-
-                    # Encode the image in base64
-                    base64_encoded = base64.b64encode(content).decode('utf-8')
-
-                    # Since we're having issues with base64 encoding, let's try to convert
-                    # Nitter URLs to direct Twitter URLs that Perplexity might be able to access
-                    original_url = None
-                    if "nitter.net/pic/orig/media" in image_url:
-                        # Extract media ID and create direct Twitter URL
-                        import re
-                        media_match = re.search(r'media%2F([^\.]+\.[^\.]+)', image_url) or re.search(r'media/([^\.]+\.[^\.]+)', image_url)
-                        if media_match:
-                            media_id = media_match.group(1)
-                            # Use direct Twitter media URL
-                            original_url = f"https://pbs.twimg.com/media/{media_id}"
-                            logger.info(f"Converted to Twitter media URL: {original_url}")
-
-                    # Add to list with the format we need for later conversion
-                    image_data_list.append({
-                        "source": {
-                            "media_type": mime_type,
-                            "data": base64_encoded
-                        },
-                        "original_url": original_url or image_url  # Store original or converted URL
-                    })
-
-                    logger.info(f"Successfully processed image {img.url}")
-
-                    # Increased limit from 2 to 5 images per post for more comprehensive analysis
-                    if len(image_data_list) >= 5:
-                        break
-
-            except Exception as e:
-                logger.warning(f"Error processing image {img.url}: {e}")
-
-        return image_data_list
-
     async def _generate_perplexity_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
-        """
-        Generate a factual report using Perplexity AI API based on the scraped text content and images.
-        """
-        api_key = os.getenv("PERPLEXITY_API_KEY")
-        if not api_key:
-            logger.error("Perplexity API key not found in environment variables.")
-            return None
-
-        full_text = scraped_data.get_full_text()
-        if not full_text.strip():
-            logger.warning(f"Post {sid} has no text content for report generation.")
-            return "Info: No text content provided for analysis."
-            
-        # Process images to include in the prompt
-        image_content = await self._process_images_perplexity(scraped_data, sid)
-        # Filter out video thumbnails (e.g., Twitter Amplify) to avoid invalid media
-        original_count = len(image_content)
-        image_content = [img for img in image_content
-                         if 'amplify_video_thumb' not in (img.get('original_url') or '')]
-        if len(image_content) < original_count:
-            logger.info(f"Filtered out {original_count - len(image_content)} video thumbnails for post {sid}")
-        
-        # Generate prompt text
-        prompt_text = PERPLEXITY_REPORT_PROMPT.format(scraped_text=full_text)
-        
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "model": "sonar-pro",
-            "messages": [],
-            "max_tokens": 2000,  # Increased token limit for more detailed reports
-            "temperature": 0.1  # Lower temperature for more factual, consistent output
-        }
-
-        # Prepare messages for Perplexity API
-        system_message = {"role": "system", "content": "You are an expert analyst who provides comprehensive, detailed, and 100% factually accurate reports. Maintain complete objectivity and neutrality. Avoid any political, social, or ideological bias. Thoroughly describe any images in the content. Provide in-depth analysis with relevant context. Structure your response clearly with organized sections."}
-        user_message = {"role": "user", "content": prompt_text}
-
-        # First attempt: Multimodal call with images if available
-        if image_content:
-            logger.info(f"Attempting multimodal Perplexity API call for post {sid}")
-            multimodal_content = []
-            multimodal_content.append({
-                "type": "text",
-                "text": prompt_text
-            })
-            for img in image_content:
-                if 'original_url' in img and img['original_url']:
-                    multimodal_content.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": img['original_url']
-                        }
-                    })
-                    logger.info(f"Added image with direct URL: {img['original_url']}")
-                else:
-                    logger.warning(f"Skipping image without original URL: {img.get('original_url', 'N/A')}")
-            
-            user_message["content"] = multimodal_content
-            messages = [user_message]  # Only user message for multimodal call
-            payload["messages"] = messages
-            
-            try:
-                # Log the payload for debugging (only the structure, not the actual image data)
-                debug_payload = payload.copy()
-                debug_payload["messages"] = [debug_payload["messages"][0].copy()]
-                if isinstance(debug_payload["messages"][0]["content"], list):
-                    for i, item in enumerate(debug_payload["messages"][0]["content"]):
-                        if item.get("type") == "image_url" and "image_url" in item:
-                            url = item["image_url"]["url"]
-                            if url.startswith("data:"):
-                                # Truncate the base64 data for logging
-                                parts = url.split(",")
-                                if len(parts) > 1:
-                                    debug_payload["messages"][0]["content"][i]["image_url"]["url"] = f"{parts[0]},<base64_data_truncated>"
-
-                logger.info(f"Sending multimodal request to Perplexity API for post {sid} with payload structure: {debug_payload}")
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        "https://api.perplexity.ai/chat/completions",
-                        headers=headers,
-                        json=payload
-                    ) as response:
-                        if response.status != 200:
-                            logger.error(f"Multimodal Perplexity API call returned status code {response.status} for post {sid}")
-                            # Log the error response
-                            error_body = await response.text()
-                            logger.error(f"Error response: {error_body}")
-                            raise Exception(f"Multimodal API call failed with status {response.status}. Details: {error_body}")
-                        data = await response.json()
-                        logger.info(f"Multimodal Perplexity API request successful for post {sid}")
-                        return data["choices"][0]["message"]["content"]
-            except Exception as e:
-                logger.exception(f"Error in multimodal Perplexity API call for post {sid}: {e}")
-                logger.info(f"Falling back to text-only Perplexity API call for post {sid}")
-
-        # Fallback: Text-only call if no images or if multimodal call failed
-        logger.info(f"Attempting text-only Perplexity API call for post {sid}")
-        messages = [system_message, user_message] # System message + user message for text-only call
-        payload["messages"] = messages
-
-        try:
-            logger.info(f"Sending text-only request to Perplexity API for post {sid}")
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://api.perplexity.ai/chat/completions",
-                    headers=headers,
-                    json=payload
-                ) as response:
-                    if response.status != 200:
-                        logger.error(f"Text-only Perplexity API call returned status code {response.status} for post {sid}")
-                        error_body = await response.text()
-                        logger.error(f"Error response: {error_body}")
-                        return f"Error: Text-only Perplexity API call failed with status {response.status}. Details: {error_body}"
-                    data = await response.json()
-                    logger.info(f"Text-only Perplexity API request successful for post {sid}")
-                    return data["choices"][0]["message"]["content"]
-        except Exception as e:
-            logger.exception(f"Error in text-only Perplexity API call for post {sid}: {e}")
-            import traceback
-            error_traceback = traceback.format_exc()
-            logger.error(f"Traceback: {error_traceback}")
-            return f"Error: Failed to generate Perplexity report (both multimodal and text-only attempts failed). Exception: {e}. Check logs for details."
+        """Generate a factual report using Perplexity AI model based on the scraped text content and images."""
+        return await self.perplexity_model.generate_report(scraped_data, sid)
 
     async def _save_results(
         self,

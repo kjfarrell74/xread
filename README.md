@@ -1,12 +1,12 @@
 # XReader
 
-XReader is an asynchronous CLI tool designed to scrape tweet data from a Nitter instance, generate detailed factual reports using the Perplexity AI API, and save the combined data for further analysis. This tool is ideal for researchers, fact-checkers, and anyone interested in analyzing social media content with enhanced metadata.
+XReader is an asynchronous CLI tool designed to scrape tweet data from a Nitter instance, generate detailed factual reports using AI models like Perplexity AI, and save the combined data for further analysis. This tool is ideal for researchers, fact-checkers, and anyone interested in analyzing social media content with enhanced metadata.
 
 ## Features
 
 - **Scraping**: Extracts tweet data including main posts and replies from a specified Nitter instance using Playwright and BeautifulSoup.
-- **Report Generation**: Generates detailed, factual reports about social media posts using the Perplexity AI API.
-- **Post Enhancement**: Enriches scraped data with normalized dates, media flags, and image descriptions using heuristic analysis.
+- **Report Generation**: Generates detailed, factual reports about social media posts using AI models, with support for Perplexity AI API and potential for additional models.
+- **Post Enhancement**: Enriches scraped data with normalized dates, media flags, and image descriptions using a centralized data enhancement module.
 - **Data Normalization**: Standardizes data formats with ISO 8601 timestamps and consistent metadata structure.
 - **Data Management**: Saves scraped data, image descriptions, and generated metadata in a structured JSON format for easy access and reference.
 
@@ -42,6 +42,10 @@ XReader is an asynchronous CLI tool designed to scrape tweet data from a Nitter 
    You can now run XReader using:
    ```bash
    python xread.py
+   ```
+   Or use the provided shell script for convenience:
+   ```bash
+   bash run.sh
    ```
 
 ## Usage
@@ -89,14 +93,14 @@ For a full list of configuration options, see [CONFIGURATION.md](CONFIGURATION.m
 
 Scraped data is stored in the `scraped_data` directory with the following structure:
 - `index.json`: An index of all scraped posts.
-- `post_[STATUSID].json`: Individual post data including main post, replies, and Perplexity report.
+- `post_[STATUSID].json`: Individual post data including main post, replies, and AI-generated report.
 
 Debug information, such as failed HTML parses, is saved in the `debug_output` directory.
 
 ## Troubleshooting
 
-- **API Key Issues**: Ensure your Perplexity and Claude API keys are correctly set in the `.env` file. If you encounter authentication errors, verify the keys' validity.
-- **Rate Limiting**: If you hit rate limits with the Perplexity API, Claude API, or Nitter instance, consider adjusting request frequency or adding delays between requests.
+- **API Key Issues**: Ensure your Perplexity API key is correctly set in the `.env` file. If you encounter authentication errors, verify the key's validity.
+- **Rate Limiting**: If you hit rate limits with the Perplexity API or Nitter instance, consider adjusting request frequency or adding delays between requests.
 - **Parsing Errors**: If posts fail to parse, check `debug_output` for saved HTML files to diagnose the issue. Ensure the Nitter instance is operational.
 - **Installation Problems**: Verify that all dependencies are installed correctly using `pip install -r requirements.txt`. Check for Python version compatibility.
 

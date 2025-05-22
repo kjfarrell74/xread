@@ -1,154 +1,152 @@
 # XReader Usage Guide
 
-This document provides detailed examples and instructions on how to use XReader, an asynchronous CLI tool for scraping tweet data from a Nitter instance, generating factual reports using the Perplexity AI API, and saving the combined data.
+XReader is a versatile CLI tool for scraping Twitter/X data via Nitter instances and generating detailed factual reports using AI models like Perplexity AI. This guide provides detailed instructions on how to use XReader in various modes and scenarios.
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Running XReader](#running-xreader)
-  - [Interactive Mode](#interactive-mode)
-  - [Command-Line Mode](#command-line-mode)
-- [Command Examples](#command-examples)
-  - [Scrape a URL](#scrape-a-url)
-  - [List Saved Posts](#list-saved-posts)
-  - [Show Statistics](#show-statistics)
-  - [Delete a Saved Post](#delete-a-saved-post)
-- [Interactive Commands](#interactive-commands)
-- [Customizing Behavior](#customizing-behavior)
+- [Basic Usage](#basic-usage)
+- [Interactive Mode](#interactive-mode)
+- [Command-Line Mode](#command-line-mode)
+- [Running with run.sh](#running-with-runsh)
+- [Output Data Structure](#output-data-structure)
+- [Tips and Best Practices](#tips-and-best-practices)
 
-## Overview
+## Basic Usage
 
-XReader allows users to scrape social media posts from Nitter, a privacy-focused alternative to Twitter, and enhances the data with AI-generated factual reports from Perplexity and normalized metadata for fact-checking or research purposes. The tool can be operated in two primary modes: interactive mode for a user-friendly interface and command-line mode for quick, scripted operations.
+XReader can be run in two primary modes: interactive mode for a user-friendly experience, and command-line mode for quick operations or scripting.
 
-## Running XReader
+### Prerequisites
 
-### Interactive Mode
+Ensure you have:
+- Installed XReader and its dependencies as per the [README.md](README.md) installation instructions.
+- Set up your Perplexity API key in a `.env` file or as an environment variable.
 
-To start XReader in interactive mode, simply run the script without any arguments:
+## Interactive Mode
+
+To start XReader in interactive mode, simply run the script without arguments:
 
 ```bash
 python xread.py
 ```
 
-In this mode, you'll be presented with a prompt where you can enter URLs to scrape or use specific commands to manage saved data. Interactive mode supports command history and auto-completion for ease of use.
+In interactive mode, you can:
+- Enter Twitter/X URLs directly to scrape and analyze them.
+- Use commands like `list`, `stats`, `delete`, and `reload_instructions` to manage your scraped data.
 
-### Command-Line Mode
+### Interactive Commands
 
-For direct operations or integration into scripts, use command-line mode by specifying a command and its arguments:
+- **`list`**: Displays a list of all scraped posts stored in the data directory.
+- **`stats`**: Shows statistics about the scraped data, such as the total number of posts and recent activity.
+- **`delete <status_id>`**: Removes a specific post from the data store by its status ID.
+- **`reload_instructions`**: Reloads the instruction set, useful if instructions have been updated.
+- **`exit` or `quit`**: Exits the interactive mode.
+
+## Command-Line Mode
+
+For quick operations or integration into scripts, use command-line mode by providing arguments directly:
+
+### Scrape a Specific URL
 
 ```bash
-python xread.py <command> [arguments]
+python xread.py scrape <URL>
 ```
 
-Available commands include `scrape`, `list`, `stats`, and `delete`. Each command is detailed below with examples.
-
-## Command Examples
-
-### Scrape a URL
-
-To scrape a specific tweet or thread from a Nitter, Twitter, or X.com URL, use the `scrape` command:
+Replace `<URL>` with the Twitter/X or Nitter URL of the post you want to scrape and analyze. Example:
 
 ```bash
-python xread.py scrape https://nitter.net/user/status/1234567890123456789
+python xread.py scrape https://x.com/user/status/123456789
 ```
-
-Or directly in interactive mode by typing the URL:
-
-```
-> https://twitter.com/user/status/1234567890123456789
-```
-
-XReader will normalize the URL to the configured Nitter instance, fetch the content, generate a comprehensive factual report using the Perplexity API, enhance post data with normalized dates and metadata, and save the results to the `scraped_data` directory.
 
 ### List Saved Posts
-
-To view metadata of previously saved posts, sorted by scrape date (most recent first):
 
 ```bash
 python xread.py list
 ```
 
-Limit the number of posts displayed:
-
-```bash
-python xread.py list --limit 5
-```
-
-In interactive mode:
-
-```
-> list 5
-```
-
-This displays the status ID, author, and scrape date for each post, helping you keep track of your saved data.
-
 ### Show Statistics
-
-To get a quick count of how many posts have been saved:
 
 ```bash
 python xread.py stats
 ```
 
-In interactive mode:
-
-```
-> stats
-```
-
-This is useful for monitoring the growth of your dataset over time.
-
 ### Delete a Saved Post
 
-To remove a saved post by its status ID:
+```bash
+python xread.py delete <status_id>
+```
+
+Replace `<status_id>` with the ID of the post to delete. Example:
 
 ```bash
-python xread.py delete 1234567890123456789
+python xread.py delete 123456789
 ```
 
-In interactive mode:
+## Running with run.sh
 
-```
-> delete 1234567890123456789
-```
+For convenience, especially when setting up a virtual environment or loading environment variables, use the provided `run.sh` script:
 
-This deletes the associated JSON file from `scraped_data` and updates the index, freeing up space and maintaining data relevance.
+### Run in Interactive Mode
 
-## Interactive Commands
-
-When in interactive mode, XReader supports the following commands in addition to direct URL input:
-
-- **`help`**: Displays a list of available commands and their descriptions.
-- **`list [limit]`**: Lists saved post metadata, optionally limited to a specified number.
-- **`stats`**: Shows the total count of saved posts.
-- **`delete <id>`**: Deletes a saved post by its status ID.
-- **`quit` or `exit`**: Exits the interactive mode.
-
-Example session:
-
-```
-XReader CLI (Perplexity Reports)
-Enter URL to scrape, or command:
-  help, list [limit], stats, delete <id>, reload_instructions, quit
-> list 3
---- Saved Posts ---
-ID: 1234567890123456789    Author: @user1            Scraped: 2025-05-03 04:30
-ID: 1234567890123456788    Author: @user2            Scraped: 2025-05-02 15:22
-ID: 1234567890123456787    Author: @user3            Scraped: 2025-05-01 09:10
--------------------
-> https://x.com/user4/status/1234567890123456790
-[Processing URL...]
-Success: Saved post 1234567890123456790.
-> quit
-Goodbye.
+```bash
+bash run.sh
 ```
 
-## Customizing Behavior
+### Run with a Specific URL
 
-XReader's behavior can be customized through configuration files:
+```bash
+bash run.sh https://x.com/user/status/123456789
+```
 
-- **`.env`**: Adjust settings like the data directory (`DATA_DIR`), Nitter instance URL (`NITTER_BASE_URL`), and Perplexity API settings. See [CONFIGURATION.md](CONFIGURATION.md) for details.
+The `run.sh` script handles virtual environment setup, dependency installation, and environment variable loading from a `.env` file if present.
 
-By tailoring these configurations, you can adapt XReader to specific research needs, such as focusing on fact-checking or contextual analysis.
+## Output Data Structure
 
-For further assistance or to report issues, refer to the troubleshooting section in [README.md](README.md) or check the project's contribution guidelines in [CONTRIBUTING.md](CONTRIBUTING.md).
+XReader saves scraped and analyzed data in JSON format in the `scraped_data` directory (configurable via `DATA_DIR` environment variable). The structure includes:
+
+- **index.json**: A summary index of all scraped posts for quick reference.
+- **post_[STATUSID].json**: Detailed data for each post, including:
+  - Main post content and metadata.
+  - Replies to the main post.
+  - AI-generated factual report (currently using Perplexity AI).
+  - Enhanced metadata like normalized dates, media flags, and image descriptions generated by the centralized data enhancement module.
+
+Example structure of a post JSON file:
+
+```json
+{
+  "main_post": {
+    "text": "Post content here",
+    "date_iso": "2023-10-01T12:00:00+00:00",
+    "images": [{"url": "image_url", "description": "Generated description"}],
+    "has_images": true,
+    "has_video": false,
+    "has_links": true,
+    "likes": 100,
+    "retweets": 50,
+    "replies_count": 20
+  },
+  "replies": [
+    {
+      "text": "Reply content",
+      "date_iso": "2023-10-01T12:05:00+00:00"
+    }
+  ],
+  "factual_context": ["Fact 1", "Fact 2"],
+  "topic_tags": ["tag1", "tag2"],
+  "scrape_meta": {
+    "scraped_at": "2023-10-01T12:10:00+00:00",
+    "source": "x.com",
+    "scraper": "perplexity-to-json-v1"
+  }
+}
+```
+
+## Tips and Best Practices
+
+- **API Key Security**: Never hardcode API keys in scripts or commit them to version control. Use a `.env` file or environment variables to keep them secure.
+- **Nitter Instance Selection**: Choose a reliable Nitter instance for scraping. If one instance is slow or down, configure a different one via the `NITTER_INSTANCE` environment variable.
+- **Rate Limiting**: Be mindful of rate limits on both the Nitter instance and Perplexity AI API. Avoid rapid successive requests to prevent being temporarily blocked.
+- **Data Management**: Regularly review and clean up old data using the `list` and `delete` commands to manage storage space.
+- **Debugging**: If scraping or report generation fails, check the `debug_output` directory for logs and failed HTML content to diagnose issues.
+
+For further assistance or to report issues, refer to the [CONTRIBUTING.md](CONTRIBUTING.md) guide.

@@ -9,7 +9,9 @@ import sys
 
 async def test_perplexity_api():
     """Test the Perplexity API with the correct format."""
-    api_key = os.getenv("PERPLEXITY_API_KEY") or "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"
+    api_key = os.getenv("PERPLEXITY_API_KEY")
+    if not api_key:
+        raise ValueError("PERPLEXITY_API_KEY environment variable is not set. Please set it before running the test.")
     
     # Test text
     test_text = "Netflix's shares dropped by 20% after announcing subscriber losses for the first time in more than 10 years."
