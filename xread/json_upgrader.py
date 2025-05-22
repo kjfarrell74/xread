@@ -14,102 +14,16 @@ def save_json_file(data: Dict[str, Any], filepath: str) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def infer_reply_dates(main_post_date_str: str, replies: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """If replies have missing dates, estimate them based on main post date + reply order."""
-    try:
-        main_date = datetime.fromisoformat(main_post_date_str.replace('Z', '+00:00'))
-    except Exception:
-        main_date = datetime.utcnow()
-
-    for i, reply in enumerate(replies):
-        if 'date' not in reply or not reply['date']:
-            # Estimate date by adding i+1 minutes to main post date
-            estimated_date = main_date + timedelta(minutes=i + 1)
-            reply['date'] = estimated_date.isoformat()
-        # Fix engagement metrics: set to None if zero or missing
-        for metric in ['likes', 'retweets', 'replies_count']:
-            if metric not in reply or reply.get(metric) in [0, '0', None]:
-                reply[metric] = None
-    return replies
+from xread.data_enhancer import infer_reply_dates
 
 
-def extract_factual_context(perplexity_report: str) -> List[str]:
-    """Extract factual context from the perplexity report using regex or simple parsing."""
-    factual_context = []
-    # Look for a section starting with "## Factual Context:" or similar
-    match = re.search(r'##\s*Factual Context\s*:(.*?)(?:\n##|$)', perplexity_report, re.DOTALL | re.IGNORECASE)
-    if match:
-        content = match.group(1).strip()
-        # Split into lines or sentences as key facts
-        lines = [line.strip() for line in content.split('\n') if line.strip()]
-        factual_context.extend(lines)
-    else:
-        # Fallback: try to extract key sentences mentioning facts
-        sentences = re.split(r'(?<=[.!?]) +', perplexity_report)
-        for sentence in sentences:
-            if any(keyword in sentence.lower() for keyword in ['fact', 'confirmed', 'reported', 'according']):
-                factual_context.append(sentence.strip())
-    return factual_context
+from xread.data_enhancer import extract_factual_context
 
 
-def extract_topic_tags(main_post_text: str, perplexity_report: str) -> List[str]:
-    """Extract or generate topic tags from main post text and perplexity report."""
-    # Simple heuristic: extract capitalized words or known keywords
-    tags = set()
-
-    # Extract capitalized words from main post text
-    words = re.findall(r'\b[A-Z][a-zA-Z0-9]+\b', main_post_text)
-    tags.update(words)
-
-    # Extract tags from perplexity report if it contains a "Topics" section
-    match = re.search(r'##\s*Topics\s*:(.*?)(?:\n##|$)', perplexity_report, re.DOTALL | re.IGNORECASE)
-    if match:
-        topics_text = match.group(1)
-        # Split by commas or newlines
-        topics = re.split(r'[,\n]+', topics_text)
-        for topic in topics:
-            topic = topic.strip()
-            if topic:
-                tags.add(topic)
-
-    # Add some fallback tags if empty
-    if not tags:
-        fallback_tags = ['gas prices', 'Trump', 'MAGA', 'energy policy', 'economic narrative']
-        tags.update(fallback_tags)
-
-    # Return as list, limit to top 10 tags
-    return list(tags)[:10]
+from xread.data_enhancer import extract_topic_tags
 
 
-def normalize_images(images: List[Any], perplexity_report: str) -> List[Any]:
-    """Add description to images if missing, using fallback from perplexity report."""
-    # Try to extract image descriptions from perplexity report (simple heuristic)
-    descriptions = []
-    match = re.search(r'Image descriptions?:\s*(.*?)(?:\n\n|$)', perplexity_report, re.DOTALL | re.IGNORECASE)
-    if match:
-        desc_text = match.group(1)
-        descriptions = [line.strip() for line in desc_text.split('\n') if line.strip()]
-
-    for i, img in enumerate(images):
-        # img may be an object with attributes or a dict
-        description = None
-        if isinstance(img, dict):
-            description = img.get('description')
-        else:
-            description = getattr(img, 'description', None)
-
-        if not description:
-            if i < len(descriptions):
-                if isinstance(img, dict):
-                    img['description'] = descriptions[i]
-                else:
-                    setattr(img, 'description', descriptions[i])
-            else:
-                if isinstance(img, dict):
-                    img['description'] = "No description available"
-                else:
-                    setattr(img, 'description', "No description available")
-    return images
+from xread.data_enhancer import normalize_images
 
 
 def build_scrape_meta(scrape_date: str, source: str) -> Dict[str, Any]:
