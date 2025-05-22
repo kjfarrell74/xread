@@ -252,11 +252,10 @@ def normalize_images(images: List[Any], additional_context: str = "") -> List[An
                 setattr(img, 'description', descriptions[i])
     return images
 
-# Placeholder for future NLP integration
+# Function to extract factual context from AI-generated reports
 def extract_factual_context(text_content: str) -> List[str]:
     """
-    Extract factual context from provided text content.
-    Currently a placeholder for future NLP integration.
+    Extract factual context from provided text content, specifically looking for a 'Factual Context' section.
     
     Args:
         text_content (str): Text content to analyze
@@ -265,12 +264,20 @@ def extract_factual_context(text_content: str) -> List[str]:
         List[str]: List of factual statements or context points
     """
     factual_context = []
-    match = re.search(r'##\s*Factual Context\s*:(.*?)(?:\n##|$)', text_content, re.DOTALL | re.IGNORECASE)
+    # Search for 'Factual Context' section (case-insensitive)
+    match = re.search(r'(?:##\s*|#*\s*)Factual Context\s*[:\n-]*(.*?)(?:\n##|\n#*|$)', text_content, re.DOTALL | re.IGNORECASE)
     if match:
         content = match.group(1).strip()
-        lines = [line.strip() for line in content.split('\n') if line.strip()]
-        factual_context.extend(lines)
+        # Extract bullet points
+        lines = [line.strip() for line in content.split('\n') if line.strip().startswith(('-', '*', '•'))]
+        if lines:
+            factual_context.extend(lines)
+        else:
+            # If no bullets found, take all non-empty lines
+            lines = [line.strip() for line in content.split('\n') if line.strip()]
+            factual_context.extend(lines)
     else:
+        # Fallback heuristic for content without a specific section
         sentences = re.split(r'(?<=[.!?]) +', text_content)
         for sentence in sentences:
             if any(keyword in sentence.lower() for keyword in ['fact', 'confirmed', 'reported', 'according']):

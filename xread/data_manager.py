@@ -72,7 +72,8 @@ class DataManager:
                 'replies_count': 'INTEGER DEFAULT 0',
                 'topic_tags': 'TEXT', # Stored as JSON string
                 'factual_context': 'TEXT',
-                'source': 'TEXT'
+                'source': 'TEXT',
+                'ai_report': 'TEXT'
             }
 
             for col_name, col_type in new_columns.items():
@@ -91,13 +92,25 @@ class DataManager:
                     post_status_id TEXT NOT NULL,
                     status_id TEXT UNIQUE,
                     user TEXT,
-                    username TEXT TEXT,
+                    username TEXT,
+                    text TEXT,
                     date TEXT,
                     permalink TEXT UNIQUE,
                     images_json TEXT,
                     FOREIGN KEY (post_status_id) REFERENCES posts (status_id) ON DELETE CASCADE
                 )
             ''')
+
+            # Check and add new columns to replies table if they don't exist
+            cursor.execute("PRAGMA table_info(replies)")
+            reply_columns = [column[1] for column in cursor.fetchall()]
+
+            if 'text' not in reply_columns:
+                try:
+                    cursor.execute("ALTER TABLE replies ADD COLUMN text TEXT")
+                    logger.info("Added column 'text' to 'replies' table.")
+                except sqlite3.Error as e:
+                    logger.error(f"Error adding column 'text' to 'replies' table: {e}")
 
             # Image cache table
             cursor.execute('''
@@ -221,8 +234,9 @@ class DataManager:
         self,
         data: ScrapedData,
         original_url: str,
-        perplexity_report: Optional[str] = None,
-        author_profile: Optional['UserProfile'] = None
+        ai_report: Optional[str] = None,
+        author_profile: Optional['UserProfile'] = None,
+        author_note: Optional['AuthorNote'] = None
     ) -> Optional[str]:
         """Save scraped data to the database and as JSON files."""
         if not self.conn:
@@ -274,7 +288,7 @@ class DataManager:
                 """
                 INSERT INTO posts (
                     status_id, author, username, text, date, permalink, images_json, 
-                    original_url, scrape_date, perplexity_report, likes, retweets, 
+                    original_url, scrape_date, ai_report, likes, retweets, 
                     replies_count, topic_tags, factual_context, source
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -288,7 +302,7 @@ class DataManager:
                     images_json,
                     original_url,
                     scrape_date,
-                    self._ensure_scalar(perplexity_report),
+                    self._ensure_scalar(ai_report),
                     data.main_post.likes,
                     data.main_post.retweets,
                     data.main_post.replies_count,
@@ -300,6 +314,11 @@ class DataManager:
 
             for reply in data.replies:
                 reply_images_json = json.dumps([img.__dict__ for img in reply.images])
+                # Check if a reply with this permalink already exists
+                cursor.execute("SELECT reply_db_id FROM replies WHERE permalink = ?", (reply.permalink,))
+                if cursor.fetchone():
+                    logger.info(f"Reply with permalink {reply.permalink} already exists. Skipping insertion.")
+                    continue
                 cursor.execute(
                     "INSERT INTO replies (post_status_id, status_id, user, username, text, date, permalink, images_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (sid, reply.status_id, reply.user, reply.username, reply.text, reply.date,
@@ -323,11 +342,13 @@ class DataManager:
                 "replies": replies_dicts,
                 "original_url": original_url,
                 "scrape_date": scrape_date,
-                "perplexity_report": perplexity_report,
+                "ai_report": ai_report,
                 "author_profile": author_profile.to_dict() if author_profile else None,
+                "author_note": author_note.note_content if author_note else None,
                 "factual_context": data.factual_context, # Add factual_context to JSON
                 "source": data.source # Add source to JSON
             }
+            logger.info(f"save: json_data = {json.dumps(json_data, indent=2, ensure_ascii=False)}")
             json_file_path = self.data_dir / 'scraped_data' / f'post_{sid}.json'
             json_file_path.parent.mkdir(parents=True, exist_ok=True)
             async with aiofiles.open(json_file_path, mode='w', encoding='utf-8') as f:
@@ -340,9 +361,150 @@ class DataManager:
             self.conn.rollback()
             return None
         except sqlite3.Error as e:
-            logger.error(f"Error saving post {sid} to database: {e}")
+            logger.error(f"Error saving post {sid} to database: {e} - Type: {type(e)}, Args: {e.args}")
             self.conn.rollback()
             return None
         except IOError as e:
-            logger.error(f"Error saving post {sid} to JSON file: {e}")
+            logger.error(f"Error saving post {sid} to JSON file: {e} - Type: {type(e)}, Args: {e.args}")
             return sid  # Return sid even if JSON save fails, since DB save succeeded
+
+    async def delete(self, status_id: str) -> bool:
+        """Delete a saved post by status ID from the database and file system."""
+        if not self.conn:
+            logger.error("Database not connected. Cannot delete post.")
+            return False
+        
+        cursor = self.conn.cursor()
+        try:
+            # Delete the post from the database (replies will be deleted automatically due to CASCADE)
+            cursor.execute("DELETE FROM posts WHERE status_id = ?", (status_id,))
+            if cursor.rowcount > 0:
+                self.conn.commit()
+                self.seen.discard(status_id)
+                logger.info(f"Deleted post {status_id} from database.")
+                
+                # Attempt to delete the corresponding JSON file
+                json_file_path = self.data_dir / 'scraped_data' / f'post_{status_id}.json'
+                if json_file_path.exists():
+                    try:
+                        json_file_path.unlink()
+                        logger.info(f"Deleted JSON file for post {status_id} at {json_file_path}.")
+                    except Exception as e:
+                        logger.error(f"Error deleting JSON file for post {status_id}: {e}")
+                return True
+            else:
+                self.conn.rollback()
+                logger.warning(f"Post {status_id} not found in database.")
+                return False
+        except sqlite3.Error as e:
+            logger.error(f"Error deleting post {status_id} from database: {e}")
+            self.conn.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    def list_meta(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """List metadata of saved posts, optionally limited to a number."""
+        if not self.conn:
+            logger.error("Database not connected. Cannot list posts.")
+            return []
+        
+        cursor = self.conn.cursor()
+        try:
+            query = "SELECT status_id, author, scrape_date FROM posts ORDER BY scrape_date DESC"
+            if limit is not None:
+                query += f" LIMIT {limit}"
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            return [{"status_id": row["status_id"], "author": row["author"], "scrape_date": row["scrape_date"]} for row in rows]
+        except sqlite3.Error as e:
+            logger.error(f"Error listing posts: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    async def delete_all(self) -> bool:
+        """Delete all saved posts from the database and corresponding JSON files from the file system."""
+        if not self.conn:
+            logger.error("Database not connected. Cannot delete all posts.")
+            return False
+        
+        cursor = self.conn.cursor()
+        try:
+            # Delete all posts from the database (replies will be deleted automatically due to CASCADE)
+            cursor.execute("DELETE FROM posts")
+            deleted_count = cursor.rowcount
+            self.conn.commit()
+            self.seen.clear()
+            logger.info(f"Deleted {deleted_count} posts from database.")
+            
+            # Attempt to delete all JSON files in the scraped_data directory
+            scraped_data_dir = self.data_dir / 'scraped_data'
+            if scraped_data_dir.exists():
+                for json_file in scraped_data_dir.glob('post_*.json'):
+                    try:
+                        json_file.unlink()
+                        logger.info(f"Deleted JSON file at {json_file}.")
+                    except Exception as e:
+                        logger.error(f"Error deleting JSON file at {json_file}: {e}")
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"Error deleting all posts from database: {e}")
+            self.conn.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    async def save_author_note(self, author_note: 'AuthorNote') -> bool:
+        """Save or update an author note in the database."""
+        if not self.conn:
+            logger.error("Database not connected. Cannot save author note.")
+            return False
+        
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO author_notes (username, note_content)
+                VALUES (?, ?)
+                """,
+                (author_note.username, author_note.note_content)
+            )
+            self.conn.commit()
+            logger.info(f"Saving author note for {author_note.username}: {author_note.note_content}")
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"Error saving author note for {author_note.username}: {author_note.note_content} {e}")
+            self.conn.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    async def get_author_note(self, username: str) -> Optional['AuthorNote']:
+        """Retrieve an author note from the database by username."""
+        if not self.conn:
+            logger.error("Database not connected. Cannot fetch author note.")
+            return None
+        
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT * FROM author_notes WHERE username = ?",
+                (username,)
+            )
+            row = cursor.fetchone()
+            if row:
+                logger.info(f"get_author_note: Author note found for {username}: {row['note_content']}")
+                from xread.models import AuthorNote  # Local import to avoid circular import
+                return AuthorNote(
+                    username=row["username"],
+                    note_content=row["note_content"]
+                )
+            else:
+                logger.info(f"get_author_note: No author note found for {username}")
+                return None
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching author note for {username}: {e}")
+            return None
+        finally:
+            cursor.close()

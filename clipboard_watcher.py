@@ -36,6 +36,7 @@ def play_sound():
 SOUND_FUNC = play_sound
 
 from xread.pipeline import ScraperPipeline
+from xread.data_manager import DataManager
 
 # Pattern for Twitter/X/Nitter post URLs
 TWITTER_URL_RE = re.compile(
@@ -44,8 +45,9 @@ TWITTER_URL_RE = re.compile(
 )
 
 async def process_url(url):
-    pipeline = ScraperPipeline()
-    await pipeline.data_manager.initialize()
+    data_manager = DataManager()
+    pipeline = ScraperPipeline(data_manager)
+    await data_manager.initialize()
     await pipeline.initialize_browser()
     try:
         await pipeline.run(url)

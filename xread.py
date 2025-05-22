@@ -3,7 +3,7 @@
 
 import asyncio
 
-from xread.cli import async_main
+from xread.cli import app
 
 if __name__ == "__main__":
-    asyncio.run(async_main())
+    app()

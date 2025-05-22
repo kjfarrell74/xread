@@ -2,6 +2,7 @@
 
 import os
 import sys
+import configparser
 from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field, ValidationError, HttpUrl
@@ -12,23 +13,32 @@ import typer
 
 from xread.constants import DEFAULT_DATA_DIR, DEFAULT_NITTER_BASE_URL, DEFAULT_MAX_IMAGE_DOWNLOADS, DEFAULT_RETRY_ATTEMPTS, DEFAULT_RETRY_DELAY, FileFormats
 
-# Load environment variables
-load_dotenv()
-
-# Configure logging
+# Configure logging first
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
+# Load environment variables from .env file
+load_dotenv()
+
+# Load configuration from config.ini if it exists
+config = configparser.ConfigParser()
+config_file = Path("config.ini")
+if config_file.exists():
+    config.read(config_file)
+    logger.info(f"Loaded configuration from {config_file}")
+else:
+    logger.warning(f"Configuration file {config_file} not found, using defaults and environment variables")
+
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables or .env file."""
-    data_dir: Path = Field(Path(os.getenv("DATA_DIR", DEFAULT_DATA_DIR)), pre=True)
+    """Application settings loaded from config.ini, environment variables, or defaults."""
+    data_dir: Path = Field(Path(os.getenv("DATA_DIR", config.get("General", "data_dir", fallback=DEFAULT_DATA_DIR))), pre=True)
     nitter_base_url: HttpUrl = Field(
-        os.getenv("NITTER_BASE_URL", DEFAULT_NITTER_BASE_URL)
+        os.getenv("NITTER_BASE_URL", config.get("Scraper", "nitter_instance", fallback=DEFAULT_NITTER_BASE_URL))
     )
     max_image_downloads: int = Field(
-        int(os.getenv("MAX_IMAGE_DOWNLOADS_PER_RUN", DEFAULT_MAX_IMAGE_DOWNLOADS)),
+        int(os.getenv("MAX_IMAGE_DOWNLOADS_PER_RUN", config.getint("Pipeline", "max_images_per_post", fallback=DEFAULT_MAX_IMAGE_DOWNLOADS))),
         ge=0,
     )
     status_id_regex: str = r"status/(\d+)"
@@ -44,14 +54,16 @@ class Settings(BaseSettings):
             ".timeline-item",
         ]
     )
-    retry_attempts: int = Field(DEFAULT_RETRY_ATTEMPTS, ge=1)
-    retry_delay: int = Field(DEFAULT_RETRY_DELAY, ge=0)
+    retry_attempts: int = Field(int(os.getenv("RETRY_ATTEMPTS", config.getint("Scraper", "retry_attempts", fallback=DEFAULT_RETRY_ATTEMPTS))), ge=1)
+    retry_delay: int = Field(int(os.getenv("RETRY_DELAY", config.getint("Scraper", "retry_delay", fallback=DEFAULT_RETRY_DELAY))), ge=0)
     image_ignore_keywords: List[str] = Field(
         ['profile_images', 'avatar', 'user_media']
     )
-    save_failed_html: bool = Field(bool(os.getenv("SAVE_FAILED_HTML", True)))
-
-    # No AI model-specific settings are needed as Perplexity is directly integrated.
+    save_failed_html: bool = Field(bool(os.getenv("SAVE_FAILED_HTML", config.getboolean("Pipeline", "save_failed_html", fallback=True))))
+    ai_model: str = Field(os.getenv("AI_MODEL", config.get("General", "ai_model", fallback="perplexity")))
+    report_max_tokens: int = Field(int(os.getenv("REPORT_MAX_TOKENS", config.getint("Pipeline", "report_max_tokens", fallback=2000))), ge=100)
+    report_temperature: float = Field(float(os.getenv("REPORT_TEMPERATURE", config.getfloat("Pipeline", "report_temperature", fallback=0.1))), ge=0.0, le=1.0)
+    fetch_timeout: int = Field(int(os.getenv("FETCH_TIMEOUT", config.getint("Scraper", "fetch_timeout", fallback=30))), ge=5)
 
     class Config:
         env_file = ".env"
@@ -65,9 +77,10 @@ try:
     # Create debug directory if needed
     if settings.save_failed_html:
         Path(FileFormats.DEBUG_DIR).mkdir(parents=True, exist_ok=True)
-    # No AI model type checking needed as Perplexity is directly used.
+    # Log the selected AI model
+    logger.info(f"Selected AI model: {settings.ai_model}")
 except ValidationError as e:
     logger.error(f"Configuration error: {e}")
     typer.echo(f"Configuration error: {e}", err=True)
-    typer.echo("Check environment variables or .env file.", err=True)
+    typer.echo("Check environment variables, config.ini, or .env file.", err=True)
     sys.exit(1)

@@ -10,6 +10,7 @@ All notable changes to XReader will be documented in this file.
 - Updated `xread/pipeline.py` to use the `PerplexityModel` class for report generation.
 - Removed hardcoded API keys from `test_perplexity_final.py` and `test_perplexity_format.py`, enforcing environment variable usage.
 - Updated documentation in `README.md`, `CONFIGURATION.md`, and `USAGE.md` to reflect multi-AI model support and centralized data enhancement.
+- Added Gemini-specific prompt `GEMINI_REPORT_PROMPT` in `xread/constants.py` with an instruction to include a "Factual Context" section for structured factual output. Updated `GeminiModel` in `xread/ai_models.py` to use this prompt and enhanced `extract_factual_context` in `xread/data_enhancer.py` to parse this section. Rationale: To ensure Gemini's output is as structured and atomic as Perplexity's for factual analysis.
 
 ## [0.1.0] - 2023-10-01
 

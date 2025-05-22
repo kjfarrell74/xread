@@ -37,11 +37,11 @@ def build_scrape_meta(scrape_date: str, source: str) -> Dict[str, Any]:
 
 
 def upgrade_perplexity_json(raw_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Transform raw Perplexity-style JSON into the perfect structured format."""
+    """Transform raw JSON into the perfect structured format."""
 
     main_post = raw_data.get('main_post', {})
     replies = raw_data.get('replies', [])
-    perplexity_report = raw_data.get('perplexity_report', '')
+    ai_report = raw_data.get('ai_report', '')
     scrape_date = raw_data.get('scrape_date', datetime.utcnow().isoformat())
     source = raw_data.get('source', None)
 
@@ -49,18 +49,18 @@ def upgrade_perplexity_json(raw_data: Dict[str, Any]) -> Dict[str, Any]:
     replies = infer_reply_dates(main_post.get('date', ''), replies)
 
     # Step 2: Extract factual context
-    factual_context = extract_factual_context(perplexity_report)
+    factual_context = extract_factual_context(ai_report)
     if not factual_context:
         factual_context = ["No factual context extracted."]
 
     # Step 3: Extract topic tags
     topic_tags = raw_data.get('topic_tags', [])
     if not topic_tags:
-        topic_tags = extract_topic_tags(main_post.get('text', ''), perplexity_report)
+        topic_tags = extract_topic_tags(main_post.get('text', ''), ai_report)
 
-    # Step 4: Normalize images and add descriptions from perplexity report
+    # Step 4: Normalize images and add descriptions from AI report
     images = main_post.get('images', [])
-    images = normalize_images(images, perplexity_report)
+    images = normalize_images(images, ai_report)
     main_post['images'] = images
 
     # Step 5: Build scrape meta with default source if missing
@@ -74,6 +74,12 @@ def upgrade_perplexity_json(raw_data: Dict[str, Any]) -> Dict[str, Any]:
         "topic_tags": topic_tags,
         "scrape_meta": scrape_meta
     }
+    # Preserve author_note if present in raw_data
+    if "author_note" in raw_data:
+        if isinstance(raw_data["author_note"], dict) and "note_content" in raw_data["author_note"]:
+            upgraded["author_note"] = raw_data["author_note"]["note_content"]
+        else:
+            upgraded["author_note"] = raw_data["author_note"]
 
     return upgraded
 

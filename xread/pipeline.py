@@ -18,19 +18,26 @@ from xread.constants import ErrorMessages, FileFormats, PERPLEXITY_REPORT_PROMPT
 from xread.models import ScrapedData, Post
 from xread.scraper import NitterScraper
 from xread.data_manager import DataManager
-from xread.ai_models import PerplexityModel
+from xread.ai_models import PerplexityModel, GeminiModel
 from xread.browser import BrowserManager
 from xread.json_upgrader import upgrade_perplexity_json
 from xread.utils import play_ding
 
 class ScraperPipeline:
     """Orchestrates scraping, processing, generating search terms, and saving data."""
-    def __init__(self):
+    def __init__(self, data_manager: DataManager):
         self.scraper = NitterScraper()
-        self.data_manager = DataManager()
+        self.data_manager = data_manager
         self.browser_manager = BrowserManager()
         self._browser_ready = False
-        self.perplexity_model = PerplexityModel()
+        # Dynamically select AI model based on settings
+        selected_model = settings.ai_model.lower()
+        if selected_model == "gemini":
+            self.ai_model = GeminiModel()
+            logger.info("Using Gemini AI model for report generation.")
+        else:
+            self.ai_model = PerplexityModel()
+            logger.info("Using Perplexity AI model for report generation.")
 
     async def initialize_browser(self) -> None:
         """Launch the Playwright browser if not already started."""
@@ -110,20 +117,20 @@ class ScraperPipeline:
             except Exception as e:
                 logger.warning(f"Error closing page: {e}")
 
-    async def _generate_perplexity_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
-        """Generate a factual report using Perplexity AI model based on the scraped text content and images."""
-        return await self.perplexity_model.generate_report(scraped_data, sid)
+    async def _generate_ai_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
+        """Generate a factual report using the selected AI model based on the scraped text content and images."""
+        return await self.ai_model.generate_report(scraped_data, sid)
 
     async def _save_results(
         self,
         scraped_data: ScrapedData,
         url: str,
-        perplexity_report: Optional[str],
+        ai_report: Optional[str],
         sid: str,
         author_profile: Optional['UserProfile'] = None,
         url_sid: Optional[str] = None
     ) -> None:
-        """Save the scraped data along with the generated Perplexity report and author profile."""
+        """Save the scraped data along with the generated AI report processed for factual context."""
         # If the URL status ID is available and different from the main post ID,
         # use it to override the main post's status ID for saving
         if url_sid and url_sid != sid:
@@ -132,9 +139,11 @@ class ScraperPipeline:
             import copy
             modified_data = copy.deepcopy(scraped_data)
             modified_data.main_post.status_id = url_sid
-            saved_sid = await self.data_manager.save(modified_data, url, perplexity_report, author_profile)
+            author_note = await self.data_manager.get_author_note(scraped_data.main_post.username)
+            saved_sid = await self.data_manager.save(modified_data, url, ai_report, author_profile, author_note)
         else:
-            saved_sid = await self.data_manager.save(scraped_data, url, perplexity_report, author_profile)
+            author_note = await self.data_manager.get_author_note(scraped_data.main_post.username)
+            saved_sid = await self.data_manager.save(scraped_data, url, ai_report, author_profile, author_note)
 
         if saved_sid:
             logger.info(f"Successfully saved post {sid}")
@@ -187,32 +196,41 @@ class ScraperPipeline:
                     await self._save_failed_html(sid, html_content)
                 return
                 
-            # Generate Perplexity report with text and images
-            perplexity_report = await self._generate_perplexity_report(scraped_data, sid)
-            if perplexity_report:
-                logger.info(f"Generated Perplexity report for post {sid}")
+            # Generate AI report with text and images using the selected model
+            ai_report = await self._generate_ai_report(scraped_data, sid)
+            if ai_report:
+                logger.info(f"Generated AI report for post {sid}")
             else:
-                logger.warning(f"Failed to generate Perplexity report for post {sid}")
-                perplexity_report = "Error: Failed to generate Perplexity report."
+                logger.warning(f"Failed to generate AI report for post {sid}")
+                ai_report = "Error: Failed to generate AI report."
 
-            # Look up author profile
+            # Look up author profile and author note
             author_username = scraped_data.main_post.username
             author_profile = await self.data_manager.get_user_profile(author_username)
             if author_profile:
                 logger.info(f"Found user profile for {author_username} in database.")
             else:
                 logger.info(f"No user profile found for {author_username} in database.")
+            
+            author_note = None  # Assign a default value
+            author_note = await self.data_manager.get_author_note(author_username)
+            if author_note:
+                logger.info(f"Found author note for {author_username} in database.")
+            else:
+                logger.info(f"No author note found for {author_username} in database.")
 
             # --- Integration of JSON upgrade ---
             # Convert ScrapedData to dict for upgrading
             scraped_data_dict = {
                 "main_post": scraped_data.main_post.__dict__,
                 "replies": [reply.__dict__ for reply in scraped_data.replies],
-                "perplexity_report": perplexity_report,
+                "ai_report": ai_report,
                 "scrape_date": datetime.now(timezone.utc).isoformat(),
                 "source": None,  # Could extract from URL or elsewhere
                 "topic_tags": scraped_data.main_post.topic_tags or []
             }
+            if author_note:
+                scraped_data_dict["author_note"] = author_note.note_content
 
             # Perform upgrade
             upgraded_data = upgrade_perplexity_json(scraped_data_dict)
@@ -239,8 +257,16 @@ class ScraperPipeline:
             scraped_data.factual_context = upgraded_data.get("factual_context", None)
             scraped_data.source = upgraded_data.get("scrape_meta", {}).get("source", None)
 
+            # ADD THIS SECTION TO UPDATE AUTHOR NOTE
+            if author_note:
+                # Ensure author_note exists in scraped_data
+                if not hasattr(scraped_data, 'author_note'):
+                    scraped_data.author_note = author_note
+                # Update author_note in scraped_data
+                scraped_data.author_note.note_content = upgraded_data.get("author_note")
+
             # Save results with upgraded data
-            await self._save_results(scraped_data, url, perplexity_report, sid, author_profile, url_sid)
+            await self._save_results(scraped_data, url, ai_report, sid, author_profile, url_sid)
             # Play notification sound after successful scrape and save
             play_ding()
 
