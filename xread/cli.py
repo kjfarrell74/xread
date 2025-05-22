@@ -14,189 +14,155 @@ from prompt_toolkit.history import FileHistory
 from xread.settings import settings, logger
 from xread.constants import FileFormats
 from xread.pipeline import ScraperPipeline
-# No AI model factory
+from xread.models import AuthorNote
+from xread.data_manager import DataManager
 
-# --- CLI Application ---
-app = typer.Typer(name="xread", invoke_without_command=True, no_args_is_help=False)
+# Define the Typer app
+app = typer.Typer(help="CLI tool for xread to scrape and process web content.")
 
-
-async def run_interactive_mode_async(pipeline: ScraperPipeline) -> None:
-    """Run interactive mode for URL input or commands."""
-    print("XReader CLI (Perplexity Reports)")
-    print("Enter URL to scrape, or command:")
-    print("  help, list [limit], stats, delete <id>, quit")
-
-    commands = [
-        'scrape', 'list', 'stats', 'delete', 'help', 'quit', 'exit', 'add-note', 'view-note'
-    ]
-    command_completer = WordCompleter(commands, ignore_case=True)
-    history = FileHistory(str(settings.data_dir / FileFormats.HISTORY_FILE))
-    session = PromptSession(
-        history=history,
-        completer=command_completer,
-        enable_history_search=True
-    )
-
-    await pipeline.initialize_browser()
+@app.command()
+def scrape(
+    url: str = typer.Argument(..., help="URL of the post to scrape"),
+    output_format: str = typer.Option("json", "--format", "-f", help="Output format for the scraped data"),
+    output_file: Optional[str] = typer.Option(None, "--output", "-o", help="Output file path. If not provided, output to stdout."),
+    ai_model: Optional[str] = typer.Option(None, "--model", "-m", help="AI model to use for processing"),
+    enhance: bool = typer.Option(False, "--enhance", "-e", help="Enhance the scraped data using AI")
+):
+    """Scrape a post from the given URL and optionally enhance it using AI."""
+    logger.info(f"Starting scrape for URL: {url}")
+    if ai_model:
+        settings.selected_model = ai_model
+        logger.info(f"Selected AI model: {ai_model}")
+    
     try:
-        while True:
-            try:
-                user_input = await session.prompt_async('> ')
-            except (EOFError, KeyboardInterrupt):
-                print("\nExiting.")
-                break
-            if not user_input:
-                continue
-
-            parts = user_input.split(maxsplit=1)
-            cmd = parts[0].lower()
-            args_str = parts[1] if len(parts) > 1 else ""
-
-            if cmd in ("quit", "exit"):
-                print("Goodbye.")
-                break
-            elif cmd == "help":
-                print("\nAvailable commands:")
-                print("  <URL>                      Scrape URL (saves data + generates Perplexity report).")
-                print("  list [limit]               List saved post metadata.")
-                print("  stats                      Show count of saved posts.")
-                print("  delete <id>                Delete a saved post by status ID.")
-                print("  add-note <username> <note> Add or update an author note.")
-                print("  view-note <username>       View an author note.")
-                print("  help                       Show this help message.")
-                print("  quit / exit                Exit the application.\n")
-            elif cmd == "list":
-                try:
-                    limit = int(args_str.split(maxsplit=1)[0]) if args_str and args_str.split(maxsplit=1)[0].isdigit() else None
-                except ValueError:
-                    print("Invalid limit.")
-                    continue
-                list_posts(limit)
-            elif cmd == "stats":
-                show_stats()
-            elif cmd == "delete":
-                delete_id = args_str.strip()
-                if delete_id:
-                    await delete_post(delete_id)
-                else:
-                    print("Usage: delete <status_id>")
-            elif cmd == "add-note":
-                args = args_str.split(maxsplit=1)
-                if len(args) < 2:
-                    print("Usage: add-note <username> <note>")
-                    continue
-                username, note = args[0], args[1]
-                author_note = AuthorNote(username=username, note_content=note)
-                await pipeline.data_manager.initialize()
-                success = await pipeline.data_manager.save_author_note(author_note)
-                if success:
-                    print(f"Author note saved for {username}.")
-                else:
-                    print(f"Failed to save author note for {username}.")
-            elif cmd == "view-note":
-                username = args_str.strip()
-                if not username:
-                    print("Usage: view-note <username>")
-                    continue
-                await pipeline.data_manager.initialize()
-                author_note = await pipeline.data_manager.get_author_note(username)
-                if author_note:
-                    print(f"Author note for {username}: {author_note.note_content}")
-                else:
-                    print(f"No author note found for {username}.")
-            elif cmd == "scrape":
-                url_to_scrape = args_str.strip()
-                if url_to_scrape:
-                    await pipeline.run(url_to_scrape)
-                else:
-                    print("Usage: scrape <url>")
-            elif urlparse(user_input).scheme in ['http', 'https']:
-                await pipeline.run(user_input)
-            else:
-                print(f"Unknown command/URL: {user_input}. Type 'help'.")
-    finally:
-        logger.info("Closing browser after interactive session...")
-        await pipeline.close_browser()
-        logger.info("Browser closed.")
-
-
-@app.command(name="scrape")
-async def scrape_command(
-    url: str = typer.Argument(..., help="Tweet/Nitter URL to scrape")
-) -> None:
-    """Scrape URL, process images, generate search terms, and save combined data."""
-    pipeline = ScraperPipeline()
-    await pipeline.data_manager.initialize()
-    logger.info(f"Scraping URL via command: {url}")
-    await pipeline.run(url)
-
-
-@app.command(name="list")
-def list_posts(limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max posts to list.")) -> None:
-    """List saved post metadata."""
-    pipeline = ScraperPipeline()
-    logger.info(f"Listing posts with limit: {limit}")
-    posts = pipeline.data_manager.list_meta(limit)
-    if not posts:
-        print("No saved posts found.")
-        return
-    print("\n--- Saved Posts ---")
-    for meta in posts:
-        sid = meta.get('status_id', 'N/A')
-        author = meta.get('author', 'Unk')
-        date_str = meta.get('scrape_date', 'Unk')
-        try:
-            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-            fmt_date = dt.strftime('%Y-%m-%d %H:%M')
-        except Exception:
-            fmt_date = date_str
-        print(f"ID: {sid:<20} Author: @{author:<18} Scraped: {fmt_date}")
-    print("-------------------\n")
-
-
-@app.command(name="stats")
-def show_stats() -> None:
-    """Show count of saved posts."""
-    pipeline = ScraperPipeline()
-    count = pipeline.data_manager.count()
-    print(f"Total saved posts: {count}")
-
-
-@app.command(name="delete")
-async def delete_post(status_id: str = typer.Argument(..., help="Status ID to delete.")) -> None:
-    """Delete a saved post by status ID."""
-    pipeline = ScraperPipeline()
-    await pipeline.data_manager.initialize()
-    logger.info(f"Deleting post {status_id}")
-    if await pipeline.data_manager.delete(status_id):
-        print(f"Deleted post {status_id}.")
-    else:
-        print(f"Could not delete post {status_id} (not found or error).")
-
-
-import subprocess
-import os
-
-async def async_main() -> None:
-    """Main async entry point."""
-    pipeline = ScraperPipeline()
-    is_interactive = len(sys.argv) <= 1 or sys.argv[1] not in app.registered_commands
-    try:
-        await pipeline.data_manager.initialize()
-        if is_interactive:
-            await run_interactive_mode_async(pipeline)
+        pipeline = ScraperPipeline(url)
+        result = asyncio.run(pipeline.run())
+        
+        if enhance:
+            logger.info("Enhancing scraped data with AI...")
+            # Placeholder for AI enhancement logic
+            pass
+        
+        data_manager = DataManager()
+        if output_format.lower() == FileFormats.JSON.value:
+            data_manager.save_as_json(result, output_file)
+        elif output_format.lower() == FileFormats.MARKDOWN.value:
+            data_manager.save_as_markdown(result, output_file)
         else:
-            browser_needed = any(cmd_name in sys.argv for cmd_name in ['scrape'])
-            if browser_needed:
-                await pipeline.initialize_browser()
-            try:
-                app()
-            finally:
-                if browser_needed:
-                    await pipeline.close_browser()
+            logger.error(f"Unsupported output format: {output_format}")
+            sys.exit(1)
+            
+        logger.info(f"Scraping completed for {url}")
     except Exception as e:
-        logger.exception("Fatal error in main execution:")
-        typer.echo(f"Fatal Error: {e}", err=True)
+        logger.error(f"Error during scraping: {str(e)}")
         sys.exit(1)
-    finally:
-        pass
+
+@app.command()
+def list_data(
+    format: str = typer.Option("json", "--format", "-f", help="Format to list the data in (json or markdown)")
+):
+    """List all scraped data in the specified format."""
+    logger.info(f"Listing scraped data in {format} format...")
+    data_manager = DataManager()
+    asyncio.run(data_manager.initialize())
+    data_list = data_manager.list_meta()
+    if not data_list:
+        print("No scraped data found.")
+    else:
+        for item in data_list:
+            print(f"ID: {item['status_id']}, Author: {item['author']}, Scrape Date: {item['scrape_date']}")
+
+@app.command()
+def add_note(
+    post_id: str = typer.Argument(..., help="ID of the post to add a note to"),
+    content: str = typer.Argument(..., help="Content of the author note")
+):
+    """Add an author note to a specific post."""
+    logger.info(f"Adding author note to post {post_id}")
+    data_manager = DataManager()
+    asyncio.run(data_manager.initialize())
+    note = AuthorNote(content=content, timestamp=datetime.now())
+    try:
+        data_manager.add_author_note(post_id, note)
+        logger.info(f"Author note added to post {post_id}")
+        print(f"Note added to post {post_id}: {content}")
+    except Exception as e:
+        logger.error(f"Error adding author note: {str(e)}")
+        sys.exit(1)
+
+@app.command()
+def delete(
+    post_id: str = typer.Argument(..., help="ID of the post to delete")
+):
+    """Delete a post from the database by its ID."""
+    logger.info(f"Deleting post {post_id}")
+    data_manager = DataManager()
+    asyncio.run(data_manager.initialize())
+    success = asyncio.run(data_manager.delete(post_id))
+    if success:
+        print(f"Post {post_id} deleted successfully.")
+        logger.info(f"Post {post_id} deleted successfully.")
+    else:
+        print(f"Failed to delete post {post_id}. It may not exist.")
+        logger.warning(f"Failed to delete post {post_id}.")
+
+@app.command()
+def interactive():
+    """Start an interactive mode for xread."""
+    logger.info("Starting interactive mode...")
+    history = FileHistory(".xread_history")
+    commands = ["scrape", "list", "add-note", "delete", "help", "exit", "quit"]
+    completer = WordCompleter(commands, ignore_case=True)
+    session = PromptSession(completer=completer, history=history)
+    
+    while True:
+        try:
+            command = session.prompt("xread> ").strip()
+            if not command:
+                continue
+            elif command.lower() in ["exit", "quit"]:
+                logger.info("Exiting interactive mode.")
+                break
+            elif command.lower() == "help":
+                print("Available commands: scrape, list, add-note, delete, help, exit, quit")
+            elif command.lower().startswith("scrape"):
+                parts = command.split()
+                if len(parts) < 2:
+                    print("Usage: scrape <URL> [--format <format>] [--output <file>] [--model <model>] [--enhance]")
+                    continue
+                url = parts[1]
+                args = parts[2:] if len(parts) > 2 else []
+                scrape(url, *args)
+            elif command.lower().startswith("list"):
+                parts = command.split()
+                format_arg = "json"
+                if len(parts) > 1 and "--format" in parts:
+                    idx = parts.index("--format")
+                    if idx + 1 < len(parts):
+                        format_arg = parts[idx + 1]
+                list_data(format_arg)
+            elif command.lower().startswith("add-note"):
+                parts = command.split()
+                if len(parts) < 3:
+                    print("Usage: add-note <post_id> <content>")
+                    continue
+                post_id = parts[1]
+                content = " ".join(parts[2:])
+                add_note(post_id, content)
+            elif command.lower().startswith("delete"):
+                parts = command.split()
+                if len(parts) < 2:
+                    print("Usage: delete <post_id>")
+                    continue
+                post_id = parts[1]
+                delete(post_id)
+            else:
+                print(f"Unknown command: {command}")
+        except KeyboardInterrupt:
+            logger.info("Interactive mode interrupted by user.")
+            break
+        except Exception as e:
+            logger.error(f"Error in interactive mode: {str(e)}")
+
+if __name__ == "__main__":
+    app()
