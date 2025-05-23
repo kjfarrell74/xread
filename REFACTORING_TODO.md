@@ -14,10 +14,10 @@ This document outlines refactoring opportunities in the xread project, prioritiz
 
 ## Function Extraction (per .clinerules)
 
-- [ ] **Extract methods in ScraperPipeline class**: Break down large methods in `xread/pipeline.py` into smaller functions with clear responsibilities:
-  - [ ] Extract image processing logic from `_generate_ai_report` into a separate method
-  - [ ] Extract URL normalization and status ID extraction from `run` into a dedicated method
-  - [ ] Extract error handling logic into separate methods
+- [x] **Extract methods in ScraperPipeline class**: Break down large methods in `xread/pipeline.py` into smaller functions with clear responsibilities
+  - [x] Extract image processing logic from `_generate_ai_report` into a separate method
+  - [x] Extract URL normalization and status ID extraction from `run` into a dedicated method
+  - [x] Extract error handling logic into separate methods
 
 - [ ] **Extract methods in NitterScraper class**: Refactor the large `fetch_html` method in `xread/scraper.py`:
   - [ ] Extract URL normalization logic

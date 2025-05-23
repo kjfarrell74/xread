@@ -77,6 +77,17 @@ class ScraperPipeline:
     async def _prepare_url(self, url: str) -> tuple[str, Optional[str]]:
         return await self._normalize_url_and_extract_sid(url)
 
+    def _extract_url_sid(self, url: str) -> Optional[str]:
+        """
+        Extract the status ID directly from the original URL.
+        """
+        url_sid_match = re.search(r'status/(\d+)', url)
+        if url_sid_match:
+            url_sid = url_sid_match.group(1)
+            logger.info(f"Extracted URL status ID: {url_sid}")
+            return url_sid
+        return None
+
     async def _fetch_and_parse(self, normalized_url: str, sid: str) -> tuple[Optional[str], Optional[ScrapedData]]:
         """Fetch HTML content and parse it into structured data."""
         page = await self.browser_manager.new_page()
@@ -121,9 +132,32 @@ class ScraperPipeline:
                 logger.warning(f"Error closing page: {e}")
 
     async def _extract_image_processing(self, scraped_data: ScrapedData) -> ScrapedData:
-        # Placeholder for image processing logic as per TODO
-        # Implement actual image processing here if needed
+        """
+        Extract and process images from scraped data.
+
+        This method is a placeholder for image processing logic.
+        Implement actual image processing here if needed, such as:
+        - Downloading images
+        - Validating image formats/sizes
+        - Running OCR or image analysis
+        - Compressing or resizing images
+        """
+        # TODO: Implement image processing logic here
         return scraped_data
+
+    def _should_skip_post(self, sid: str, url_sid: Optional[str]) -> bool:
+        """
+        Determine if the post should be skipped based on seen IDs.
+        """
+        if sid in self.data_manager.seen:
+            if url_sid and url_sid != sid and url_sid not in self.data_manager.seen:
+                logger.info(f"Main post {sid} seen, but URL post {url_sid} not seen. Continuing.")
+                return False
+            else:
+                logger.info(f"Post {sid} seen. Skipping.")
+                typer.echo(f"Skipped (already saved): {sid}")
+                return True
+        return False
 
     async def _generate_ai_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
         """Generate a factual report using the selected AI model."""
@@ -183,21 +217,11 @@ class ScraperPipeline:
             normalized_url, sid = await self._prepare_url(url)
 
             # Extract the status ID directly from the URL, which might be different from the main post ID
-            url_sid = None
-            import re
-            url_sid_match = re.search(r'status/(\d+)', url)
-            if url_sid_match:
-                url_sid = url_sid_match.group(1)
-                logger.info(f"Extracted URL status ID: {url_sid}")
+            url_sid = self._extract_url_sid(url)
 
             # Check both the main post ID and URL ID
-            if sid in self.data_manager.seen:
-                if url_sid and url_sid != sid and url_sid not in self.data_manager.seen:
-                    logger.info(f"Main post {sid} seen, but URL post {url_sid} not seen. Continuing.")
-                else:
-                    logger.info(f"Post {sid} seen. Skipping.")
-                    typer.echo(f"Skipped (already saved): {sid}")
-                    return
+            if self._should_skip_post(sid, url_sid):
+                return
                 
             html_content, scraped_data = await self._fetch_and_parse(normalized_url, sid)
             if not scraped_data:
