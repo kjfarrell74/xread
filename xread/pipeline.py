@@ -31,7 +31,7 @@ class ScraperPipeline:
         self.browser_manager = BrowserManager()
         self._browser_ready = False
         # Dynamically select AI model based on settings
-        selected_model = settings.ai_model.lower()
+        selected_model = str(settings.ai_model).lower()
         if selected_model == "gemini":
             self.ai_model = GeminiModel()
             logger.info("Using Gemini AI model for report generation.")

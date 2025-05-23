@@ -7,3 +7,14 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .coverage
+
+# Sensitive configuration files
+config.ini
+*.key
+*.pem
+*.p12
+*.pfx
+.env.local
+.env.production
+.env.development
+secrets/

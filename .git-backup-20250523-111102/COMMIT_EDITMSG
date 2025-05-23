@@ -1,0 +1,1 @@
+Fix unawaited coroutine in list_data function

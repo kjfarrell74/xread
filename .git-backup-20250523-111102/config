@@ -1,0 +1,19 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+[remote "origin"]
+	url = git@github.com:kjfarrell74/xread.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "master"]
+	remote = origin
+	merge = refs/heads/master
+	vscode-merge-base = origin/master
+[user]
+	email = user@example.com
+	name = Claude User
+[branch "refactor/context-managers"]
+	remote = origin
+	merge = refs/heads/refactor/context-managers
+	vscode-merge-base = origin/refactor/context-managers

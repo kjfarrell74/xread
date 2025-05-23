@@ -31,15 +31,22 @@ def scrape(
     """Scrape a post from the given URL and optionally enhance it using AI."""
     logger.info(f"Starting scrape for URL: {url}")
     if ai_model:
-        settings.selected_model = ai_model
+        settings.ai_model = str(ai_model)
         logger.info(f"Selected AI model: {ai_model}")
+    else:
+        logger.info(f"Using default AI model: {settings.ai_model}")
     
     try:
-        pipeline = ScraperPipeline(url)
-        result = asyncio.run(pipeline.run())
+        data_manager = AsyncDataManager()
+        asyncio.run(data_manager.initialize())
+        pipeline = ScraperPipeline(data_manager)
+        result = asyncio.run(pipeline.run(url))
         
         if enhance:
             logger.info("Enhancing scraped data with AI...")
+            # Ensure AI model is a string for enhancement
+            ai_model_str = str(settings.ai_model)
+            logger.info(f"Using AI model for enhancement: {ai_model_str}")
             # Placeholder for AI enhancement logic
             pass
         

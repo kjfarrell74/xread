@@ -1,23 +1,18 @@
-[DEFAULT]
-# Configuration template for XReader
-# Replace placeholders with actual values or set via environment variables
+[General]
+ai_model = perplexity
+log_level = INFO
 
-[API]
-# API keys should be set in environment variables or a secure .env file
+[API Keys]
+# DO NOT put real API keys here - use environment variables
 perplexity_api_key = REPLACE_WITH_YOUR_PERPLEXITY_API_KEY
+gemini_api_key = REPLACE_WITH_YOUR_GEMINI_API_KEY
 
-[Paths]
-# Directory for storing scraped data
-data_dir = scraped_data
+[Pipeline]
+save_failed_html = true
+max_images_per_post = 10
+report_max_tokens = 2000
+report_temperature = 0.1
 
-[Scraping]
-# Nitter instance to use for scraping
+[Scraper]
 nitter_instance = https://nitter.net
-# Delay between requests to avoid rate limiting (seconds)
-request_delay = 2
-
-[Notifications]
-# Enable/disable sound notifications
-enable_sound = false
-# Path to sound file for notifications
-sound_file = ding.mp3
+fetch_timeout = 30
