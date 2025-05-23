@@ -42,10 +42,10 @@ This document outlines refactoring opportunities in the xread project, prioritiz
 - [x] **Complete MastodonPlugin implementation**: The `xread/plugins/plugin_mastodon.py` has placeholder implementation
   - [x] Implement `scrape` method with proper Mastodon API integration
 
-- [ ] **Enhance PluginManager**: Update `xread/plugins/manager.py` to:
-  - [ ] Add proper registration for AIModelPlugin classes
-  - [ ] Add plugin configuration capabilities
-  - [ ] Add plugin discovery from external directories
+- [x] **Enhance PluginManager**: Update `xread/plugins/manager.py` to:
+  - [x] Add proper registration for AIModelPlugin classes
+  - [x] Add plugin configuration capabilities
+  - [x] Add plugin discovery from external directories
 
 ## Error Handling
 
