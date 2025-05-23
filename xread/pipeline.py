@@ -100,8 +100,8 @@ class ScraperPipeline:
                 return await self.scraper.fetch_html(page, normalized_url)
 
             try:
-                html_content = await with_retry(fetch_html_with_retry, retries=3, delay=2, exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
-            except (aiohttp.ClientError, asyncio.TimeoutError) as net_exc:
+                html_content = await fetch_html_with_retry()
+            except Exception as net_exc:
                 logger.error(f"Network error during fetch for {normalized_url}: {net_exc}")
                 typer.echo(f"Network error: {net_exc}", err=True)
                 return None, None
@@ -232,7 +232,8 @@ class ScraperPipeline:
         """Run the full pipeline: scrape, process images, generate terms, and save."""
         await self.initialize_browser()
         logger.info(f"Starting pipeline for {url}")
-        
+        html_content = None  # Initialize to handle cases where it's not defined
+        scraped_data = None  # Initialize for error handling
         try:
             normalized_url, sid = await self._prepare_url(url)
 
@@ -242,7 +243,7 @@ class ScraperPipeline:
             # Check both the main post ID and URL ID
             if self._should_skip_post(sid, url_sid):
                 return
-                
+            
             html_content, scraped_data = await self._fetch_and_parse(normalized_url, sid)
             if not scraped_data:
                 if html_content:
