@@ -12,6 +12,7 @@ from pathlib import Path
 
 import typer
 import aiofiles
+from xread.core.async_file import write_json_async
 
 from xread.settings import settings, logger
 from xread.constants import ErrorMessages, FileFormats, PERPLEXITY_REPORT_PROMPT
@@ -21,7 +22,7 @@ from xread.data_manager import AsyncDataManager
 from xread.ai_models import PerplexityModel, GeminiModel
 from xread.browser import BrowserManager
 from xread.json_upgrader import upgrade_perplexity_json
-from xread.utils import play_ding
+from xread.core.utils import play_ding
 
 class ScraperPipeline:
     """Orchestrates scraping, processing, generating search terms, and saving data."""
@@ -59,8 +60,7 @@ class ScraperPipeline:
         fpath = Path(FileFormats.DEBUG_DIR) / f"{FileFormats.FAILED_PARSE_PREFIX}{sid_val}{FileFormats.HTML_EXTENSION}"
         fpath.parent.mkdir(parents=True, exist_ok=True)
         try:
-            async with aiofiles.open(fpath, 'w', encoding='utf-8') as f:
-                await f.write(html)
+            await write_json_async(fpath, {"html_content": html})
             logger.info(f"Saved failed HTML to {fpath}")
         except Exception as e:
             logger.error(f"Could not save failed HTML to {fpath}: {e}")
@@ -270,6 +270,11 @@ class ScraperPipeline:
             # Play notification sound after successful scrape and save
             play_ding()
 
+        except KeyboardInterrupt:
+            logger.info("Received KeyboardInterrupt, closing browser...")
+            await self.close_browser()
+            typer.echo("Process interrupted by user. Browser closed.")
+            raise  # Re-raise to exit cleanly
         except ValueError as e:
             logger.error(f"URL/Input error: {e}")
             typer.echo(f"Error: {e}", err=True)
@@ -278,3 +283,6 @@ class ScraperPipeline:
             typer.echo(f"Error: An unexpected error occurred: {e}", err=True)
             if html_content and scraped_data is None:
                 await self._save_failed_html(sid, html_content)
+        finally:
+            # Ensure browser is closed in case of any other unhandled exceptions
+            await self.close_browser()
