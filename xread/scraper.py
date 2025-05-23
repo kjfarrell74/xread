@@ -55,25 +55,34 @@ class NitterScraper:
                 if not html_content:
                     logger.warning(f"Empty HTML from {normalized_url}")
                     continue
-                if ("Tweet not found" in html_content or
-                        "Instance has been rate limited" in html_content or
-                        "User not found" in html_content):
+                if self._is_error_content(html_content):
                     logger.warning(f"Content from {normalized_url} indicates error: {html_content[:200]}...")
                 logger.info(f"Fetched HTML ({len(html_content)} bytes) from {normalized_url}")
                 self.base_url = base_url  # Update the primary base URL to the successful one
                 return html_content
             except Exception as e:
-                logger.error(f"Error fetching {normalized_url}: {e}")
-                # Attempt to capture partial content for diagnostics
-                try:
-                    partial_content = await page.content()
-                    if partial_content:
-                        logger.debug(f"Partial content captured despite error for {normalized_url}: {partial_content[:200]}...")
-                    else:
-                        logger.debug(f"No partial content available for {normalized_url}")
-                except Exception as partial_e:
-                    logger.debug(f"Failed to capture partial content for {normalized_url}: {partial_e}")
+                await self._handle_fetch_error(e, normalized_url, page)
                 continue
+
+    def _is_error_content(self, html_content: str) -> bool:
+        """
+        Check if the HTML content contains known error indicators.
+        """
+        return any(
+            err in html_content
+            for err in ("Tweet not found", "Instance has been rate limited", "User not found")
+        )
+
+    async def _handle_fetch_error(self, e: Exception, normalized_url: str, page: Page) -> None:
+        logger.error(f"Error fetching {normalized_url}: {e}")
+        try:
+            partial_content = await page.content()
+            if partial_content:
+                logger.debug(f"Partial content captured despite error for {normalized_url}: {partial_content[:200]}...")
+            else:
+                logger.debug(f"No partial content available for {normalized_url}")
+        except Exception as partial_e:
+            logger.debug(f"Failed to capture partial content for {normalized_url}: {partial_e}")
         logger.error(f"All Nitter instances failed for {original_url}")
         return None
 
@@ -83,23 +92,12 @@ class NitterScraper:
             logger.error("Parsing skipped: No HTML.")
             return None
         soup = BeautifulSoup(html, 'html.parser')
-        error_text = soup.find(
-            string=re.compile("Tweet not found|Instance has been rate limited|User not found", re.IGNORECASE)
-        )
-        if error_text:
-            logger.error("Parsing failed: Page indicates error.")
+        if not self._validate_content(soup):
             return None
         combined_selector = ", ".join(settings.tweet_selectors)
         all_posts = soup.select(combined_selector)
-        if not all_posts:
-            logger.warning(f"No elements matched selectors: {settings.tweet_selectors}")
-            return None
-        valid_posts = [
-            el for el in all_posts
-            if el.select_one('.username, .handle') and el.select_one('.tweet-content, .content')
-        ]
+        valid_posts = self._filter_valid_posts(all_posts)
         if not valid_posts:
-            logger.warning("Elements matched but none contained username/content.")
             return None
         main_element = valid_posts[0]
         reply_elements = valid_posts[1:]
@@ -119,6 +117,24 @@ class NitterScraper:
             return None
         logger.info(f"Parsed main post and {len(replies)} unique replies.")
         return ScrapedData(main_post=main_post, replies=replies)
+
+    def _validate_content(self, soup: BeautifulSoup) -> bool:
+        error_text = soup.find(
+            string=re.compile("Tweet not found|Instance has been rate limited|User not found", re.IGNORECASE)
+        )
+        if error_text:
+            logger.error("Parsing failed: Page indicates error.")
+            return False
+        return True
+
+    def _filter_valid_posts(self, all_posts: list) -> list:
+        valid_posts = [
+            el for el in all_posts
+            if el.select_one('.username, .handle') and el.select_one('.tweet-content, .content')
+        ]
+        if not valid_posts:
+            logger.warning("Elements matched but none contained username/content.")
+        return valid_posts
 
     def _extract_post_data(self, element) -> Post:
         """Extract post details (user, text, date, images) from a BeautifulSoup element."""

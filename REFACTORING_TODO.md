@@ -19,10 +19,10 @@ This document outlines refactoring opportunities in the xread project, prioritiz
   - [x] Extract URL normalization and status ID extraction from `run` into a dedicated method
   - [x] Extract error handling logic into separate methods
 
-- [ ] **Extract methods in NitterScraper class**: Refactor the large `fetch_html` method in `xread/scraper.py`:
-  - [ ] Extract URL normalization logic
-  - [ ] Extract error handling logic
-  - [ ] Extract content validation logic
+- [x] **Extract methods in NitterScraper class**: Refactor the large `fetch_html` method in `xread/scraper.py`:
+  - [x] Extract URL normalization logic
+  - [x] Extract error handling logic
+  - [x] Extract content validation logic
 
 - [ ] **Extract methods in PerplexityModel class**: Break down the large `generate_report` method in `xread/ai_models.py`:
   - [ ] Extract multimodal API call logic
