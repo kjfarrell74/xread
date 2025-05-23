@@ -50,15 +50,10 @@ class PerplexityModel(BaseAIModel):
             raise ValueError("Perplexity API key is required.")
     
     async def generate_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
-        """Generate a factual report using Perplexity AI API based on the scraped text content and images.
-        
-        Args:
-            scraped_data (ScrapedData): The scraped data containing text and images.
-            sid (str): The status ID of the post for logging purposes.
-            
-        Returns:
-            Optional[str]: The generated report or an error message if generation fails.
-        """
+        """Generate a factual report using Perplexity AI API based on the scraped text content and images, with robust error handling and retry logic."""
+        from xread.core.utils import with_retry
+        import aiohttp
+
         full_text = scraped_data.get_full_text()
         if not full_text.strip():
             logger.warning(f"Post {sid} has no text content for report generation.")
@@ -94,11 +89,18 @@ class PerplexityModel(BaseAIModel):
 
         # First attempt: Multimodal call with images if available
         if image_content:
-            multimodal_result = await self._generate_multimodal_report(
-                prompt_text, image_content, user_message, payload, headers, sid
-            )
-            if multimodal_result is not None:
-                return multimodal_result
+            try:
+                async def multimodal_call():
+                    return await self._generate_multimodal_report(
+                        prompt_text, image_content, user_message, payload, headers, sid
+                    )
+                multimodal_result = await with_retry(multimodal_call, retries=2, delay=2, exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+                if multimodal_result is not None:
+                    return multimodal_result
+            except (aiohttp.ClientError, asyncio.TimeoutError) as net_exc:
+                logger.error(f"Network error in multimodal Perplexity API call for post {sid}: {net_exc}")
+            except Exception as e:
+                logger.error(f"Unhandled error in multimodal Perplexity API call for post {sid}: {e}")
 
         # Fallback: Text-only call if no images or if multimodal call failed
         logger.info(f"Attempting text-only Perplexity API call for post {sid}")
@@ -106,7 +108,12 @@ class PerplexityModel(BaseAIModel):
         payload["messages"] = messages
 
         try:
-            return await self._generate_text_only_report(headers, payload, sid)
+            async def text_only_call():
+                return await self._generate_text_only_report(headers, payload, sid)
+            return await with_retry(text_only_call, retries=2, delay=2, exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+        except (aiohttp.ClientError, asyncio.TimeoutError) as net_exc:
+            logger.error(f"Network error in text-only Perplexity API call for post {sid}: {net_exc}")
+            return f"Error: Network error in text-only Perplexity API call: {net_exc}"
         except Exception as e:
             return await self._handle_perplexity_error(e, sid)
     
