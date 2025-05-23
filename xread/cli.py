@@ -15,7 +15,7 @@ from xread.settings import settings, logger
 from xread.constants import FileFormats
 from xread.pipeline import ScraperPipeline
 from xread.models import AuthorNote
-from xread.data_manager import DataManager
+from xread.data_manager import AsyncDataManager
 
 # Define the Typer app
 app = typer.Typer(help="CLI tool for xread to scrape and process web content.")
@@ -43,7 +43,7 @@ def scrape(
             # Placeholder for AI enhancement logic
             pass
         
-        data_manager = DataManager()
+        data_manager = AsyncDataManager()
         if output_format.lower() == FileFormats.JSON.value:
             data_manager.save_as_json(result, output_file)
         elif output_format.lower() == FileFormats.MARKDOWN.value:
@@ -63,7 +63,7 @@ def list_data(
 ):
     """List all scraped data in the specified format."""
     logger.info(f"Listing scraped data in {format} format...")
-    data_manager = DataManager()
+    data_manager = AsyncDataManager()
     asyncio.run(data_manager.initialize())
     data_list = data_manager.list_meta()
     if not data_list:
@@ -79,7 +79,7 @@ def add_note(
 ):
     """Add an author note to a specific post."""
     logger.info(f"Adding author note to post {post_id}")
-    data_manager = DataManager()
+    data_manager = AsyncDataManager()
     asyncio.run(data_manager.initialize())
     note = AuthorNote(content=content, timestamp=datetime.now())
     try:
@@ -96,7 +96,7 @@ def delete(
 ):
     """Delete a post from the database by its ID."""
     logger.info(f"Deleting post {post_id}")
-    data_manager = DataManager()
+    data_manager = AsyncDataManager()
     asyncio.run(data_manager.initialize())
     success = asyncio.run(data_manager.delete(post_id))
     if success:

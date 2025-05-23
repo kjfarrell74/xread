@@ -17,7 +17,7 @@ from xread.settings import settings, logger
 from xread.constants import ErrorMessages, FileFormats, PERPLEXITY_REPORT_PROMPT
 from xread.models import ScrapedData, Post
 from xread.scraper import NitterScraper
-from xread.data_manager import DataManager
+from xread.data_manager import AsyncDataManager
 from xread.ai_models import PerplexityModel, GeminiModel
 from xread.browser import BrowserManager
 from xread.json_upgrader import upgrade_perplexity_json
@@ -25,7 +25,7 @@ from xread.utils import play_ding
 
 class ScraperPipeline:
     """Orchestrates scraping, processing, generating search terms, and saving data."""
-    def __init__(self, data_manager: DataManager):
+    def __init__(self, data_manager: AsyncDataManager):
         self.scraper = NitterScraper()
         self.data_manager = data_manager
         self.browser_manager = BrowserManager()

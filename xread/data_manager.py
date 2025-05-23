@@ -1,7 +1,7 @@
 """Data management functionality for saving and loading scraped data in xread."""
 
 import json
-import sqlite3  # Added for database operations
+import aiosqlite  # Using async SQLite for database operations
 from pathlib import Path
 from typing import Optional, Dict, List, Set, Any
 import aiofiles
@@ -10,42 +10,42 @@ from datetime import datetime, timezone
 from xread.settings import settings, logger
 from xread.models import ScrapedData, Post, Image, AuthorNote, UserProfile # Import AuthorNote and UserProfile
 
-class DataManager:
-    """Handles saving and loading scraped data to/from the database."""
+class AsyncDataManager:
+    """Handles saving and loading scraped data to/from the database asynchronously."""
     def __init__(self):
         self.data_dir = settings.data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / 'xread_data.db'  # Define DB path
-        self.conn: Optional[sqlite3.Connection] = None
+        self.conn: Optional[aiosqlite.Connection] = None
         self.image_cache: Dict[str, str] = {}  # Keep for in-memory, but DB is source
         self.seen: Set[str] = set()
 
     async def initialize(self) -> None:
         """Initialize the data manager by connecting to DB and creating tables."""
-        self.conn = self._connect_db()
-        self._initialize_db()
+        self.conn = await self._connect_db()
+        await self._initialize_db()
         await self._load_seen_ids()
         await self._load_cache()  # Load cache from DB into memory
 
-    def _connect_db(self) -> sqlite3.Connection:
-        """Establish SQLite connection."""
+    async def _connect_db(self) -> aiosqlite.Connection:
+        """Establish async SQLite connection."""
         try:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)  # check_same_thread=False needed for async usage
-            conn.row_factory = sqlite3.Row  # Access columns by name
+            conn = await aiosqlite.connect(self.db_path)
+            conn.row_factory = aiosqlite.Row  # Access columns by name
             logger.info(f"Connected to SQLite database: {self.db_path}")
             return conn
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Error connecting to SQLite database: {e}")
             raise  # Propagate error
 
-    def _initialize_db(self) -> None:
+    async def _initialize_db(self) -> None:
         """Create database tables if they don't exist and perform migrations."""
         if not self.conn:
             raise ConnectionError("Database not connected.")
-        cursor = self.conn.cursor()
+        cursor = await self.conn.cursor()
         try:
             # Main posts table
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS posts (
                     status_id TEXT PRIMARY KEY,
                     author TEXT,
@@ -63,8 +63,8 @@ class DataManager:
             ''')
 
             # Check and add new columns to posts table if they don't exist
-            cursor.execute("PRAGMA table_info(posts)")
-            columns = [column[1] for column in cursor.fetchall()]
+            await cursor.execute("PRAGMA table_info(posts)")
+            columns = [column[1] for column in await cursor.fetchall()]
 
             new_columns = {
                 'likes': 'INTEGER DEFAULT 0',
@@ -79,14 +79,14 @@ class DataManager:
             for col_name, col_type in new_columns.items():
                 if col_name not in columns:
                     try:
-                        cursor.execute(f"ALTER TABLE posts ADD COLUMN {col_name} {col_type}")
+                        await cursor.execute(f"ALTER TABLE posts ADD COLUMN {col_name} {col_type}")
                         logger.info(f"Added column '{col_name}' to 'posts' table.")
-                    except sqlite3.Error as e:
+                    except aiosqlite.Error as e:
                         logger.error(f"Error adding column '{col_name}' to 'posts' table: {e}")
                         # Depending on severity, you might want to raise or handle differently
 
             # Replies table
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS replies (
                     reply_db_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     post_status_id TEXT NOT NULL,
@@ -102,18 +102,18 @@ class DataManager:
             ''')
 
             # Check and add new columns to replies table if they don't exist
-            cursor.execute("PRAGMA table_info(replies)")
-            reply_columns = [column[1] for column in cursor.fetchall()]
+            await cursor.execute("PRAGMA table_info(replies)")
+            reply_columns = [column[1] for column in await cursor.fetchall()]
 
             if 'text' not in reply_columns:
                 try:
-                    cursor.execute("ALTER TABLE replies ADD COLUMN text TEXT")
+                    await cursor.execute("ALTER TABLE replies ADD COLUMN text TEXT")
                     logger.info("Added column 'text' to 'replies' table.")
-                except sqlite3.Error as e:
+                except aiosqlite.Error as e:
                     logger.error(f"Error adding column 'text' to 'replies' table: {e}")
 
             # Image cache table
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS image_cache (
                     url_hash TEXT PRIMARY KEY,
                     description TEXT,
@@ -122,7 +122,7 @@ class DataManager:
             ''')
 
             # User profiles table
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     username TEXT PRIMARY KEY,
                     display_name TEXT,
@@ -137,20 +137,20 @@ class DataManager:
             ''')
 
             # Author notes table
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS author_notes (
                     username TEXT PRIMARY KEY,
                     note_content TEXT
                 )
             ''')
 
-            self.conn.commit()
+            await self.conn.commit()
             logger.info("Database tables and schema migrations ensured.")
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Error initializing database tables or performing migrations: {e}")
-            self.conn.rollback()
+            await self.conn.rollback()
         finally:
-            cursor.close()
+            await cursor.close()
 
     async def _load_index(self) -> None:
         if self.index_file.exists():
@@ -165,30 +165,30 @@ class DataManager:
     async def _load_seen_ids(self) -> None:
         """Load already processed post IDs from the database."""
         if not self.conn: return
-        cursor = self.conn.cursor()
+        cursor = await self.conn.cursor()
         try:
-            cursor.execute("SELECT status_id FROM posts")
-            rows = cursor.fetchall()
+            await cursor.execute("SELECT status_id FROM posts")
+            rows = await cursor.fetchall()
             self.seen = {row['status_id'] for row in rows}
             logger.info(f"Loaded {len(self.seen)} seen post IDs from database.")
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Error loading seen IDs from database: {e}")
         finally:
-            cursor.close()
+            await cursor.close()
 
     async def _load_cache(self) -> None:
         """Load image description cache from the database."""
         if not self.conn: return
-        cursor = self.conn.cursor()
+        cursor = await self.conn.cursor()
         try:
-            cursor.execute("SELECT url_hash, description FROM image_cache")
-            rows = cursor.fetchall()
+            await cursor.execute("SELECT url_hash, description FROM image_cache")
+            rows = await cursor.fetchall()
             self.image_cache = {row['url_hash']: row['description'] for row in rows}
             logger.info(f"Loaded {len(self.image_cache)} items into image cache from database.")
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Error loading image cache from database: {e}")
         finally:
-            cursor.close()
+            await cursor.close()
 
     # Removed _save_index as it's no longer needed with DB storage
 
@@ -197,13 +197,13 @@ class DataManager:
         if not self.conn:
             logger.error("Database not connected. Cannot fetch user profile.")
             return None
-        cursor = self.conn.cursor()
+        cursor = await self.conn.cursor()
         try:
-            cursor.execute(
+            await cursor.execute(
                 "SELECT * FROM user_profiles WHERE username = ?",
                 (username,)
             )
-            row = cursor.fetchone()
+            row = await cursor.fetchone()
             if row:
                 from xread.models import UserProfile  # Local import to avoid circular import
                 return UserProfile(
@@ -223,7 +223,7 @@ class DataManager:
             logger.error(f"Error fetching user profile for {username}: {e}")
             return None
         finally:
-            cursor.close()
+            await cursor.close()
 
     def _ensure_scalar(self, value):
         if isinstance(value, (list, dict)):
@@ -257,7 +257,7 @@ class DataManager:
             logger.info(f"Post {sid} already saved. Skipping.")
             return None
 
-        cursor = self.conn.cursor()
+        cursor = await self.conn.cursor()
         try:
             scrape_date = datetime.now(timezone.utc).isoformat()
             images_json = json.dumps([img.__dict__ for img in data.main_post.images])
@@ -284,7 +284,7 @@ class DataManager:
             logger.debug(f"Saving post {sid} with topic_tags type: {type(topic_tags_value)} and value: {topic_tags_value}")
 
             # Insert into posts table with new columns
-            cursor.execute(
+            await cursor.execute(
                 """
                 INSERT INTO posts (
                     status_id, author, username, text, date, permalink, images_json, 
@@ -315,17 +315,17 @@ class DataManager:
             for reply in data.replies:
                 reply_images_json = json.dumps([img.__dict__ for img in reply.images])
                 # Check if a reply with this permalink already exists
-                cursor.execute("SELECT reply_db_id FROM replies WHERE permalink = ?", (reply.permalink,))
-                if cursor.fetchone():
+                await cursor.execute("SELECT reply_db_id FROM replies WHERE permalink = ?", (reply.permalink,))
+                if await cursor.fetchone():
                     logger.info(f"Reply with permalink {reply.permalink} already exists. Skipping insertion.")
                     continue
-                cursor.execute(
+                await cursor.execute(
                     "INSERT INTO replies (post_status_id, status_id, user, username, text, date, permalink, images_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (sid, reply.status_id, reply.user, reply.username, reply.text, reply.date,
                      reply.permalink, reply_images_json)
                 )
 
-            self.conn.commit()
+            await self.conn.commit()
             self.seen.add(sid)
             logger.info(f"Saved post {sid} to database.")
             
@@ -356,13 +356,13 @@ class DataManager:
             logger.info(f"Saved post {sid} to JSON file at {json_file_path}.")
             
             return sid
-        except sqlite3.IntegrityError as e:
+        except aiosqlite.IntegrityError as e:
             logger.warning(f"Integrity error saving post {sid}: {e}")
-            self.conn.rollback()
+            await self.conn.rollback()
             return None
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Error saving post {sid} to database: {e} - Type: {type(e)}, Args: {e.args}")
-            self.conn.rollback()
+            await self.conn.rollback()
             return None
         except IOError as e:
             logger.error(f"Error saving post {sid} to JSON file: {e} - Type: {type(e)}, Args: {e.args}")
@@ -374,12 +374,12 @@ class DataManager:
             logger.error("Database not connected. Cannot delete post.")
             return False
         
-        cursor = self.conn.cursor()
+        cursor = await self.conn.cursor()
         try:
             # Delete the post from the database (replies will be deleted automatically due to CASCADE)
-            cursor.execute("DELETE FROM posts WHERE status_id = ?", (status_id,))
+            await cursor.execute("DELETE FROM posts WHERE status_id = ?", (status_id,))
             if cursor.rowcount > 0:
-                self.conn.commit()
+                await self.conn.commit()
                 self.seen.discard(status_id)
                 logger.info(f"Deleted post {status_id} from database.")
                 
@@ -393,35 +393,35 @@ class DataManager:
                         logger.error(f"Error deleting JSON file for post {status_id}: {e}")
                 return True
             else:
-                self.conn.rollback()
+                await self.conn.rollback()
                 logger.warning(f"Post {status_id} not found in database.")
                 return False
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Error deleting post {status_id} from database: {e}")
-            self.conn.rollback()
+            await self.conn.rollback()
             return False
         finally:
-            cursor.close()
+            await cursor.close()
 
-    def list_meta(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    async def list_meta(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """List metadata of saved posts, optionally limited to a number."""
         if not self.conn:
             logger.error("Database not connected. Cannot list posts.")
             return []
         
-        cursor = self.conn.cursor()
+        cursor = await self.conn.cursor()
         try:
             query = "SELECT status_id, author, scrape_date FROM posts ORDER BY scrape_date DESC"
             if limit is not None:
                 query += f" LIMIT {limit}"
-            cursor.execute(query)
-            rows = cursor.fetchall()
+            await cursor.execute(query)
+            rows = await cursor.fetchall()
             return [{"status_id": row["status_id"], "author": row["author"], "scrape_date": row["scrape_date"]} for row in rows]
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Error listing posts: {e}")
             return []
         finally:
-            cursor.close()
+            await cursor.close()
 
     async def delete_all(self) -> bool:
         """Delete all saved posts from the database and corresponding JSON files from the file system."""
@@ -429,12 +429,12 @@ class DataManager:
             logger.error("Database not connected. Cannot delete all posts.")
             return False
         
-        cursor = self.conn.cursor()
+        cursor = await self.conn.cursor()
         try:
             # Delete all posts from the database (replies will be deleted automatically due to CASCADE)
-            cursor.execute("DELETE FROM posts")
+            await cursor.execute("DELETE FROM posts")
             deleted_count = cursor.rowcount
-            self.conn.commit()
+            await self.conn.commit()
             self.seen.clear()
             logger.info(f"Deleted {deleted_count} posts from database.")
             
@@ -448,12 +448,12 @@ class DataManager:
                     except Exception as e:
                         logger.error(f"Error deleting JSON file at {json_file}: {e}")
             return True
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Error deleting all posts from database: {e}")
-            self.conn.rollback()
+            await self.conn.rollback()
             return False
         finally:
-            cursor.close()
+            await cursor.close()
 
     async def save_author_note(self, author_note: 'AuthorNote') -> bool:
         """Save or update an author note in the database."""
@@ -461,24 +461,24 @@ class DataManager:
             logger.error("Database not connected. Cannot save author note.")
             return False
         
-        cursor = self.conn.cursor()
+        cursor = await self.conn.cursor()
         try:
-            cursor.execute(
+            await cursor.execute(
                 """
                 INSERT OR REPLACE INTO author_notes (username, note_content)
                 VALUES (?, ?)
                 """,
                 (author_note.username, author_note.note_content)
             )
-            self.conn.commit()
+            await self.conn.commit()
             logger.info(f"Saving author note for {author_note.username}: {author_note.note_content}")
             return True
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Error saving author note for {author_note.username}: {author_note.note_content} {e}")
-            self.conn.rollback()
+            await self.conn.rollback()
             return False
         finally:
-            cursor.close()
+            await cursor.close()
 
     async def get_author_note(self, username: str) -> Optional['AuthorNote']:
         """Retrieve an author note from the database by username."""
@@ -486,13 +486,13 @@ class DataManager:
             logger.error("Database not connected. Cannot fetch author note.")
             return None
         
-        cursor = self.conn.cursor()
+        cursor = await self.conn.cursor()
         try:
-            cursor.execute(
+            await cursor.execute(
                 "SELECT * FROM author_notes WHERE username = ?",
                 (username,)
             )
-            row = cursor.fetchone()
+            row = await cursor.fetchone()
             if row:
                 logger.info(f"get_author_note: Author note found for {username}: {row['note_content']}")
                 from xread.models import AuthorNote  # Local import to avoid circular import
@@ -503,8 +503,8 @@ class DataManager:
             else:
                 logger.info(f"get_author_note: No author note found for {username}")
                 return None
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             logger.error(f"Error fetching author note for {username}: {e}")
             return None
         finally:
-            cursor.close()
+            await cursor.close()
