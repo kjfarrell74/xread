@@ -18,8 +18,9 @@ XReader supports a configuration file named `config.ini` in the project root dir
   - `log_level`: Set the logging level (e.g., `INFO`, `DEBUG`, `WARNING`). Default: `INFO`.
 
 - **[API Keys] Section**:
-  - `perplexity_api_key`: Optionally store the API key for Perplexity AI (can be overridden by environment variables).
-  - `gemini_api_key`: Optionally store the API key for Gemini AI (can be overridden by environment variables).
+  - **Note:** Storing API keys directly in `config.ini` is discouraged for security reasons. It's recommended to use environment variables.
+  - `; perplexity_api_key`: Example of Perplexity API Key (commented out, set via `XREAD_PERPLEXITY_API_KEY` environment variable).
+  - `; gemini_api_key`: Example of Gemini API Key (commented out, set via `XREAD_GEMINI_API_KEY` environment variable).
 
 - **[Pipeline] Section**:
   - `save_failed_html`: Boolean to enable/disable saving failed HTML content for debugging. Default: `true`.
@@ -47,9 +48,14 @@ Environment variables can override settings from `config.ini` and are useful for
 
 ### Key Environment Variables
 
-- **PERPLEXITY_API_KEY**: Your API key for accessing the Perplexity AI API. This is required for generating factual reports on scraped social media data.
-  - Example: `PERPLEXITY_API_KEY=pplx-your-api-key-here`
-- **DATA_DIR**: Directory where scraped data and metadata will be stored. Defaults to `scraped_data`.
+**API Keys (Recommended Method):**
+- **`XREAD_PERPLEXITY_API_KEY`**: Your API key for Perplexity AI. Required for using Perplexity for report generation.
+  - Example: `XREAD_PERPLEXITY_API_KEY="pplx-your-api-key-here"`
+- **`XREAD_GEMINI_API_KEY`**: Your API key for Google Gemini. Required for using Gemini for report generation.
+  - Example: `XREAD_GEMINI_API_KEY="your-gemini-api-key-here"`
+
+**Other Environment Variables:**
+- **`DATA_DIR`**: Directory where scraped data and metadata will be stored. Defaults to `scraped_data`.
   - Example: `DATA_DIR=scraped_data`
 - **DEBUG_DIR**: Directory for storing debug information like failed HTML parses. Defaults to `debug_output`.
   - Example: `DEBUG_DIR=debug_output`
@@ -63,13 +69,21 @@ Environment variables can override settings from `config.ini` and are useful for
 If you use a `.env` file, the `run.sh` script will automatically load these variables. Alternatively, you can set them directly in your shell before running the application:
 
 ```bash
-export PERPLEXITY_API_KEY=pplx-your-api-key-here
+export XREAD_PERPLEXITY_API_KEY="pplx-your-api-key-here"
+export XREAD_GEMINI_API_KEY="your-gemini-api-key-here"
 python xread.py
+```
+Alternatively, place them in a `.env` file in the project root, and they will be loaded automatically:
+```
+XREAD_PERPLEXITY_API_KEY="pplx-your-api-key-here"
+XREAD_GEMINI_API_KEY="your-gemini-api-key-here"
 ```
 
 ## AI Model Configuration
 
-XReader supports multiple AI models for report generation, including Perplexity and Gemini. The architecture is designed to be extensible for additional models in the future. You can select the AI model using the `ai_model` setting in `config.ini` or by setting the `AI_MODEL` environment variable (e.g., `perplexity` or `gemini`). API keys for these models can be set in `config.ini` under the `[API Keys]` section or via environment variables (`PERPLEXITY_API_KEY` and `GEMINI_API_KEY`).
+XReader supports multiple AI models for report generation, including Perplexity and Gemini. The architecture is designed to be extensible for additional models in the future. You can select the AI model using the `ai_model` setting in `config.ini` or by setting the `AI_MODEL` environment variable (e.g., `perplexity` or `gemini`).
+
+**API keys for these models should be set using environment variables (`XREAD_PERPLEXITY_API_KEY` and `XREAD_GEMINI_API_KEY`) as described above.** While `settings.py` might allow fallback to `config.ini` for these keys if environment variables are not set, this is primarily for local development convenience and is not the recommended approach for production or shared environments.
 
 ## Data Enhancement Configuration
 
@@ -77,7 +91,7 @@ XReader uses a centralized data enhancement module (`xread/data_enhancer.py`) to
 
 ## Troubleshooting Configuration Issues
 
-- **Missing API Key**: If you encounter errors related to authentication with an AI model, ensure that the corresponding API key (`PERPLEXITY_API_KEY` or `GEMINI_API_KEY`) is correctly set in your `.env` file, environment, or `config.ini`.
+- **Missing API Key**: If you encounter errors related to authentication with an AI model, ensure that the corresponding API key (`XREAD_PERPLEXITY_API_KEY` or `XREAD_GEMINI_API_KEY`) is correctly set in your environment (e.g., via `.env` file or direct export). The application will log a warning if an API key is not found.
 - **Invalid Nitter Instance**: If scraping fails, verify that the `nitter_instance` URL in `config.ini` or `NITTER_INSTANCE` environment variable is operational. You may need to switch to a different instance if the current one is down.
 - **File Permission Issues**: Ensure that the directories specified in `DATA_DIR` (or `data_dir` in `config.ini`) and `DEBUG_DIR` have the necessary write permissions for storing data.
 - **Configuration File Not Found**: If `config.ini` is not found, XReader will fall back to environment variables and defaults. Ensure the file is in the project root if you intend to use it.

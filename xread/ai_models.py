@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from xread.settings import settings, logger
 from xread.constants import PERPLEXITY_REPORT_PROMPT, GEMINI_REPORT_PROMPT
 from xread.models import ScrapedData, Post
+from xread.exceptions import AIModelError, ConfigurationError # Import custom exceptions
 
 
 class BaseAIModel(ABC):
@@ -44,10 +45,10 @@ class PerplexityModel(BaseAIModel):
         Args:
             api_key (Optional[str]): The API key for Perplexity AI. If not provided, it will be fetched from environment variables.
         """
-        self.api_key = api_key or os.getenv("PERPLEXITY_API_KEY")
+        self.api_key = api_key or settings.perplexity_api_key # Use settings for consistency
         if not self.api_key:
-            logger.error("Perplexity API key not found in environment variables or initialization.")
-            raise ValueError("Perplexity API key is required.")
+            logger.error("Perplexity API key not found in settings.")
+            raise ConfigurationError("Perplexity API key is required but not configured.")
     
     async def generate_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
         """Generate a factual report using Perplexity AI API based on the scraped text content and images.
@@ -139,45 +140,51 @@ class PerplexityModel(BaseAIModel):
                         json=payload
                     ) as response:
                         if response.status != 200:
-                            logger.error(f"Multimodal Perplexity API call returned status code {response.status} for post {sid}")
-                            # Log the error response
                             error_body = await response.text()
-                            logger.error(f"Error response: {error_body}")
-                            raise Exception(f"Multimodal API call failed with status {response.status}. Details: {error_body}")
+                            logger.error(f"Multimodal Perplexity API call failed for post {sid}. Status: {response.status}, Body: {error_body}", exc_info=True)
+                            # This is an API error, but we will try text-only, so not raising AIModelError yet.
+                            # Instead, let it fall through to the text-only attempt by raising a generic Exception.
+                            raise Exception(f"Multimodal API call failed with status {response.status}")
                         data = await response.json()
+                        if not data.get("choices") or not data["choices"][0].get("message") or not data["choices"][0]["message"].get("content"):
+                            logger.error(f"Unexpected response structure from Perplexity (multimodal) for post {sid}: {data}", exc_info=True)
+                            raise AIModelError("Perplexity API (multimodal) returned unexpected response structure.")
                         logger.info(f"Multimodal Perplexity API request successful for post {sid}")
                         return data["choices"][0]["message"]["content"]
-            except Exception as e:
-                logger.exception(f"Error in multimodal Perplexity API call for post {sid}: {e}")
-                logger.info(f"Falling back to text-only Perplexity API call for post {sid}")
+            except aiohttp.ClientError as e:
+                logger.error(f"Network/HTTP error in multimodal Perplexity API call for post {sid}: {e}", exc_info=True)
+                # Fall through to text-only
+            except Exception as e: # Includes JSONDecodeError, custom Exception raised above, etc.
+                logger.warning(f"Multimodal Perplexity API call failed for post {sid}: {e}", exc_info=True)
+                # Fall through to text-only
 
-        # Fallback: Text-only call if no images or if multimodal call failed
+        # Fallback: Text-only call
         logger.info(f"Attempting text-only Perplexity API call for post {sid}")
-        messages = [system_message, user_message]  # System message + user message for text-only call
+        # Ensure user_message content is just the prompt_text string for text-only
+        user_message["content"] = prompt_text 
+        messages = [system_message, user_message]
         payload["messages"] = messages
 
         try:
             logger.info(f"Sending text-only request to Perplexity API for post {sid}")
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://api.perplexity.ai/chat/completions",
-                    headers=headers,
-                    json=payload
-                ) as response:
+                async with session.post("https://api.perplexity.ai/chat/completions", headers=headers, json=payload) as response:
                     if response.status != 200:
-                        logger.error(f"Text-only Perplexity API call returned status code {response.status} for post {sid}")
                         error_body = await response.text()
-                        logger.error(f"Error response: {error_body}")
-                        return f"Error: Text-only Perplexity API call failed with status {response.status}. Details: {error_body}"
+                        logger.error(f"Text-only Perplexity API call failed for post {sid}. Status: {response.status}, Body: {error_body}", exc_info=True)
+                        raise AIModelError(f"Perplexity API (text-only) call failed with status {response.status}.")
                     data = await response.json()
+                    if not data.get("choices") or not data["choices"][0].get("message") or not data["choices"][0]["message"].get("content"):
+                        logger.error(f"Unexpected response structure from Perplexity (text-only) for post {sid}: {data}", exc_info=True)
+                        raise AIModelError("Perplexity API (text-only) returned unexpected response structure.")
                     logger.info(f"Text-only Perplexity API request successful for post {sid}")
                     return data["choices"][0]["message"]["content"]
-        except Exception as e:
-            logger.exception(f"Error in text-only Perplexity API call for post {sid}: {e}")
-            import traceback
-            error_traceback = traceback.format_exc()
-            logger.error(f"Traceback: {error_traceback}")
-            return f"Error: Failed to generate Perplexity report (both multimodal and text-only attempts failed). Exception: {e}. Check logs for details."
+        except aiohttp.ClientError as e:
+            logger.error(f"Network/HTTP error in text-only Perplexity API call for post {sid}: {e}", exc_info=True)
+            raise AIModelError(f"Network error during Perplexity API (text-only) call: {e}") from e
+        except Exception as e: # Includes JSONDecodeError etc.
+            logger.error(f"Error in text-only Perplexity API call for post {sid}: {e}", exc_info=True)
+            raise AIModelError(f"Failed to generate Perplexity report (text-only attempt): {e}") from e
 
     async def _process_images_perplexity(self, scraped_data: ScrapedData, sid: str) -> List[Dict[str, Any]]:
         """Process images for use with Perplexity AI API.
@@ -338,10 +345,10 @@ class GeminiModel(BaseAIModel):
         Args:
             api_key (Optional[str]): The API key for Gemini AI. If not provided, it will be fetched from environment variables.
         """
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        self.api_key = api_key or settings.gemini_api_key # Use settings for consistency
         if not self.api_key:
-            logger.error("Gemini API key not found in environment variables or initialization.")
-            raise ValueError("Gemini API key is required.")
+            logger.error("Gemini API key not found in settings.")
+            raise ConfigurationError("Gemini API key is required but not configured.")
     
     async def generate_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
         """Generate a factual report using Gemini AI API based on the scraped text content and images.
@@ -420,44 +427,51 @@ class GeminiModel(BaseAIModel):
                         json=payload
                     ) as response:
                         if response.status != 200:
-                            logger.error(f"Multimodal Gemini API call returned status code {response.status} for post {sid}")
                             error_body = await response.text()
-                            logger.error(f"Error response: {error_body}")
-                            raise Exception(f"Multimodal API call failed with status {response.status}. Details: {error_body}")
+                            logger.error(f"Multimodal Gemini API call failed for post {sid}. Status: {response.status}, Body: {error_body}", exc_info=True)
+                            # Fall through to text-only
+                            raise Exception(f"Multimodal Gemini API call failed with status {response.status}")
                         data = await response.json()
+                        if not data.get("candidates") or not data["candidates"][0].get("content") or not data["candidates"][0]["content"].get("parts") or not data["candidates"][0]["content"]["parts"][0].get("text"):
+                            logger.error(f"Unexpected response structure from Gemini (multimodal) for post {sid}: {data}", exc_info=True)
+                            raise AIModelError("Gemini API (multimodal) returned unexpected response structure.")
                         logger.info(f"Multimodal Gemini API request successful for post {sid}")
                         return data["candidates"][0]["content"]["parts"][0]["text"]
-            except Exception as e:
-                logger.exception(f"Error in multimodal Gemini API call for post {sid}: {e}")
-                logger.info(f"Falling back to text-only Gemini API call for post {sid}")
+            except aiohttp.ClientError as e:
+                logger.error(f"Network/HTTP error in multimodal Gemini API call for post {sid}: {e}", exc_info=True)
+                # Fall through to text-only
+            except Exception as e: # Includes JSONDecodeError, custom Exception raised above, etc.
+                logger.warning(f"Multimodal Gemini API call failed for post {sid}: {e}", exc_info=True)
+                # Fall through to text-only
 
-        # Fallback: Text-only call if no images or if multimodal call failed
+        # Fallback: Text-only call
         logger.info(f"Attempting text-only Gemini API call for post {sid}")
-        user_content["parts"] = [{"text": prompt_text}]
+        user_content["parts"] = [{"text": prompt_text}] # Ensure parts is just text for text-only
         payload["contents"] = [user_content] if not system_content else [system_content, user_content]
 
         try:
             logger.info(f"Sending text-only request to Gemini API for post {sid}")
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",  # Updated endpoint for Gemini API with a specific model
-                    headers=headers,
-                    json=payload
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+                    headers=headers, json=payload
                 ) as response:
                     if response.status != 200:
-                        logger.error(f"Text-only Gemini API call returned status code {response.status} for post {sid}")
                         error_body = await response.text()
-                        logger.error(f"Error response: {error_body}")
-                        return f"Error: Text-only Gemini API call failed with status {response.status}. Details: {error_body}"
+                        logger.error(f"Text-only Gemini API call failed for post {sid}. Status: {response.status}, Body: {error_body}", exc_info=True)
+                        raise AIModelError(f"Gemini API (text-only) call failed with status {response.status}.")
                     data = await response.json()
+                    if not data.get("candidates") or not data["candidates"][0].get("content") or not data["candidates"][0]["content"].get("parts") or not data["candidates"][0]["content"]["parts"][0].get("text"):
+                        logger.error(f"Unexpected response structure from Gemini (text-only) for post {sid}: {data}", exc_info=True)
+                        raise AIModelError("Gemini API (text-only) returned unexpected response structure.")
                     logger.info(f"Text-only Gemini API request successful for post {sid}")
                     return data["candidates"][0]["content"]["parts"][0]["text"]
-        except Exception as e:
-            logger.exception(f"Error in text-only Gemini API call for post {sid}: {e}")
-            import traceback
-            error_traceback = traceback.format_exc()
-            logger.error(f"Traceback: {error_traceback}")
-            return f"Error: Failed to generate Gemini report (both multimodal and text-only attempts failed). Exception: {e}. Check logs for details."
+        except aiohttp.ClientError as e:
+            logger.error(f"Network/HTTP error in text-only Gemini API call for post {sid}: {e}", exc_info=True)
+            raise AIModelError(f"Network error during Gemini API (text-only) call: {e}") from e
+        except Exception as e: # Includes JSONDecodeError etc.
+            logger.error(f"Error in text-only Gemini API call for post {sid}: {e}", exc_info=True)
+            raise AIModelError(f"Failed to generate Gemini report (text-only attempt): {e}") from e
 
     async def _process_images_gemini(self, scraped_data: ScrapedData, sid: str) -> List[Dict[str, Any]]:
         """Process images for use with Gemini AI API.

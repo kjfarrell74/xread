@@ -4,12 +4,13 @@ import re
 from typing import Optional
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
-from playwright.async_api import Page
+from playwright.async_api import Page, Error as PlaywrightError # Import PlaywrightError
 
 from xread.settings import settings, logger
 from xread.constants import PAGE_READY_SELECTOR, TimeoutConstants, NA_PLACEHOLDER
 from xread.models import ScrapedData, Post, Image
 from xread.utils import with_retry
+from xread.exceptions import ScrapingError # Import custom exception
 
 class NitterScraper:
     """Scrapes data from a Nitter instance using Playwright and BeautifulSoup."""
@@ -57,52 +58,77 @@ class NitterScraper:
                 logger.warning(f"Content from {url} indicates error.")
             logger.info(f"Fetched HTML ({len(html_content)} bytes) from {url}")
             return html_content
-        except Exception as e:
-            logger.error(f"Error fetching {url}: {e}")
-            return None
+        except PlaywrightError as e: # Catch Playwright specific errors
+            logger.error(f"Playwright error fetching {url}: {e}", exc_info=True)
+            raise ScrapingError(f"Playwright operation failed while fetching {url}") from e
+        except Exception as e: # Catch any other exceptions
+            logger.error(f"Generic error fetching {url}: {e}", exc_info=True)
+            raise ScrapingError(f"Failed to fetch {url} due to an unexpected error") from e
 
-    def parse_html(self, html: str) -> Optional[ScrapedData]:
+    def parse_html(self, html: str) -> ScrapedData: # Changed return type to ScrapedData (non-optional)
         """Parse HTML content and extract main post and replies."""
         if not html:
-            logger.error("Parsing skipped: No HTML.")
-            return None
+            logger.error("Parsing skipped: No HTML content provided.")
+            raise ScrapingError("Cannot parse empty HTML content.") # Raise error
+        
         soup = BeautifulSoup(html, 'html.parser')
-        error_text = soup.find(
-            string=re.compile("Tweet not found|Instance has been rate limited|User not found", re.IGNORECASE)
-        )
-        if error_text:
-            logger.error("Parsing failed: Page indicates error.")
-            return None
+        
+        # Check for explicit error messages in the page
+        error_messages = ["Tweet not found", "Instance has been rate limited", "User not found"]
+        for error_msg in error_messages:
+            if error_msg in html: # Check raw HTML as well, sometimes error messages are not in specific tags
+                 logger.error(f"Parsing failed: Page indicates error: '{error_msg}'")
+                 raise ScrapingError(f"Page indicates error: '{error_msg}'")
+
         combined_selector = ", ".join(settings.tweet_selectors)
         all_posts = soup.select(combined_selector)
         if not all_posts:
-            logger.warning(f"No elements matched selectors: {settings.tweet_selectors}")
-            return None
+            logger.warning(f"No elements matched selectors: {settings.tweet_selectors}. HTML might be unexpected.")
+            # Consider if this should be an error or if an empty ScrapedData is valid in some cases.
+            # For now, let's assume it's an error if no posts are found.
+            raise ScrapingError(f"No tweet elements found using selectors: {settings.tweet_selectors}")
+            
         valid_posts = [
             el for el in all_posts
             if el.select_one('.username, .handle') and el.select_one('.tweet-content, .content')
         ]
         if not valid_posts:
-            logger.warning("Elements matched but none contained username/content.")
-            return None
+            logger.warning("Elements matched tweet selectors, but no valid posts with username/content found.")
+            raise ScrapingError("No valid tweet content (username/text) found in matched elements.")
+            
         main_element = valid_posts[0]
         reply_elements = valid_posts[1:]
+        
         try:
             main_post = self._extract_post_data(main_element)
+            if not main_post.text or main_post.text == NA_PLACEHOLDER: # Ensure main post has content
+                logger.error("Main post parsing resulted in empty text content.")
+                raise ScrapingError("Failed to extract valid text content for the main post.")
+
             replies = [self._extract_post_data(el) for el in reply_elements]
-            # Filter out exact duplicate replies based on status_id or permalink
+            # Filter out exact duplicate replies and replies identical to main post
             unique_replies: Dict[str, Post] = {}
-            main_key = main_post.status_id or main_post.permalink
+            main_post_key = main_post.status_id or main_post.permalink # Use a more descriptive name
+            if main_post_key and main_post_key != NA_PLACEHOLDER:
+                 # This logic implies we don't want the main post to appear as a reply
+                 # If main_post_key is None or NA, it might be an issue with main_post extraction
+                 pass
+
             for reply in replies:
-                key = reply.status_id or reply.permalink
-                if key and key != NA_PLACEHOLDER and key not in unique_replies and key != main_key:
-                    unique_replies[key] = reply
-            replies = list(unique_replies.values())
-        except Exception as e:
-            logger.exception(f"Error extracting post data: {e}")
-            return None
-        logger.info(f"Parsed main post and {len(replies)} unique replies.")
-        return ScrapedData(main_post=main_post, replies=replies)
+                reply_key = reply.status_id or reply.permalink
+                # Ensure reply is valid, not a duplicate of another reply, and not a duplicate of the main post
+                if reply_key and reply_key != NA_PLACEHOLDER and \
+                   reply_key not in unique_replies and \
+                   reply_key != main_post_key:
+                    unique_replies[reply_key] = reply
+            
+            final_replies = list(unique_replies.values())
+            logger.info(f"Parsed main post and {len(final_replies)} unique replies.")
+            return ScrapedData(main_post=main_post, replies=final_replies)
+
+        except Exception as e: # Catch any other error during data extraction
+            logger.error(f"Error extracting post data: {e}", exc_info=True)
+            raise ScrapingError(f"Failed to extract post data due to an unexpected error: {e}") from e
 
     def _extract_post_data(self, element) -> Post:
         """Extract post details (user, text, date, images) from a BeautifulSoup element."""

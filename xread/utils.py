@@ -1,9 +1,11 @@
 """Utility functions and decorators for the xread application."""
 
+from __future__ import annotations # For forward references if needed, and cleaner syntax
+
 import asyncio
 import random
 from pathlib import Path
-from typing import Callable, Any
+from typing import Callable, Any, Coroutine, Optional, TypeVar, ParamSpec, List as TypingList, Awaitable
 import functools
 
 import aiohttp
@@ -14,23 +16,26 @@ import subprocess
 
 from xread.settings import settings, logger
 
-def with_retry(retries: int = None, delay: int = None):
-    """Decorator to retry async functions with exponential backoff."""
-    retries = retries if retries is not None else settings.retry_attempts
-    delay = delay if delay is not None else settings.retry_delay
+# Define TypeVar and ParamSpec for generic decorator
+R = TypeVar('R')
+P = ParamSpec('P')
 
-    def decorator(fn: Callable[..., Any]):
+def with_retry(retries: Optional[int] = None, delay: Optional[int] = None) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
+    """Decorator to retry async functions with exponential backoff."""
+    actual_retries: int = retries if retries is not None else settings.retry_attempts
+    actual_delay: int = delay if delay is not None else settings.retry_delay
+
+    def decorator(fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
         @functools.wraps(fn)
-        async def wrapper(*args, **kwargs):
-            last_exception = None
-            for attempt in range(retries):
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            last_exception: Optional[Exception] = None
+            for attempt in range(actual_retries):
                 try:
-                    if asyncio.iscoroutinefunction(fn):
-                        return await fn(*args, **kwargs)
-                    return await asyncio.to_thread(fn, *args, **kwargs)
+                    # The decorator is designed for async functions, so direct await is appropriate
+                    return await fn(*args, **kwargs)
                 except (
-                    PlaywrightTimeoutError,
-                    PlaywrightError,
+                    PlaywrightTimeoutError, # Specific Playwright Timeout
+                    PlaywrightError,      # General Playwright Error
                     aiohttp.ClientError,
                     IOError,
                 ) as e:

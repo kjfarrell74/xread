@@ -1,14 +1,15 @@
 """Data management functionality for saving and loading scraped data in xread."""
 
 import json
-import sqlite3  # Added for database operations
+import aiosqlite # Changed from sqlite3
 from pathlib import Path
 from typing import Optional, Dict, List, Set, Any
 import aiofiles
 from datetime import datetime, timezone
 
 from xread.settings import settings, logger
-from xread.models import ScrapedData, Post, Image, AuthorNote, UserProfile # Import AuthorNote and UserProfile
+from xread.models import ScrapedData, Post, Image, AuthorNote, UserProfile
+from xread.exceptions import DatabaseError, FileOperationError # Import custom exceptions
 
 class DataManager:
     """Handles saving and loading scraped data to/from the database."""
@@ -16,38 +17,39 @@ class DataManager:
         self.data_dir = settings.data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / 'xread_data.db'  # Define DB path
-        self.conn: Optional[sqlite3.Connection] = None
+        self.conn: Optional[aiosqlite.Connection] = None # Changed type hint
         self.image_cache: Dict[str, str] = {}  # Keep for in-memory, but DB is source
         self.seen: Set[str] = set()
 
     async def initialize(self) -> None:
         """Initialize the data manager by connecting to DB and creating tables."""
-        self.conn = self._connect_db()
-        self._initialize_db()
+        self.conn = await self._connect_db() # Changed to await
+        await self._initialize_db() # Will be made async, so await
         await self._load_seen_ids()
         await self._load_cache()  # Load cache from DB into memory
 
-    def _connect_db(self) -> sqlite3.Connection:
-        """Establish SQLite connection."""
+    async def _connect_db(self) -> aiosqlite.Connection: # Changed to async def, return type
+        """Establish SQLite connection using aiosqlite."""
         try:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)  # check_same_thread=False needed for async usage
-            conn.row_factory = sqlite3.Row  # Access columns by name
-            logger.info(f"Connected to SQLite database: {self.db_path}")
+            # check_same_thread is not an argument for aiosqlite.connect
+            conn = await aiosqlite.connect(self.db_path) # Changed to await aiosqlite.connect
+            conn.row_factory = aiosqlite.Row  # Access columns by name, changed to aiosqlite.Row
+            logger.info(f"Connected to SQLite database via aiosqlite: {self.db_path}")
             return conn
-        except sqlite3.Error as e:
-            logger.error(f"Error connecting to SQLite database: {e}")
-            raise  # Propagate error
+        except aiosqlite.Error as e:
+            logger.error(f"Database connection failed for {self.db_path}: {e}", exc_info=True)
+            raise DatabaseError(f"Failed to connect to database {self.db_path}") from e
 
-    def _initialize_db(self) -> None:
+    async def _initialize_db(self) -> None: # Already async
         """Create database tables if they don't exist and perform migrations."""
         if not self.conn:
             raise ConnectionError("Database not connected.")
-        cursor = self.conn.cursor()
-        try:
-            # Main posts table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS posts (
-                    status_id TEXT PRIMARY KEY,
+        async with self.conn.cursor() as cursor: # Use async with for cursor
+            try:
+                # Main posts table
+                await cursor.execute(''' # await
+                    CREATE TABLE IF NOT EXISTS posts (
+                        status_id TEXT PRIMARY KEY,
                     author TEXT,
                     username TEXT,
                     text TEXT,
@@ -63,8 +65,8 @@ class DataManager:
             ''')
 
             # Check and add new columns to posts table if they don't exist
-            cursor.execute("PRAGMA table_info(posts)")
-            columns = [column[1] for column in cursor.fetchall()]
+            await cursor.execute("PRAGMA table_info(posts)")
+            columns = [column[1] for column in await cursor.fetchall()]
 
             new_columns = {
                 'likes': 'INTEGER DEFAULT 0',
@@ -79,14 +81,14 @@ class DataManager:
             for col_name, col_type in new_columns.items():
                 if col_name not in columns:
                     try:
-                        cursor.execute(f"ALTER TABLE posts ADD COLUMN {col_name} {col_type}")
+                        await cursor.execute(f"ALTER TABLE posts ADD COLUMN {col_name} {col_type}")
                         logger.info(f"Added column '{col_name}' to 'posts' table.")
-                    except sqlite3.Error as e:
-                        logger.error(f"Error adding column '{col_name}' to 'posts' table: {e}")
-                        # Depending on severity, you might want to raise or handle differently
+                    except aiosqlite.Error as e:
+                        # Log specific alter table error but continue schema initialization if possible
+                        logger.error(f"Error adding column '{col_name}' to 'posts' table: {e}", exc_info=True)
 
             # Replies table
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS replies (
                     reply_db_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     post_status_id TEXT NOT NULL,
@@ -102,18 +104,18 @@ class DataManager:
             ''')
 
             # Check and add new columns to replies table if they don't exist
-            cursor.execute("PRAGMA table_info(replies)")
-            reply_columns = [column[1] for column in cursor.fetchall()]
+            await cursor.execute("PRAGMA table_info(replies)")
+            reply_columns = [column[1] for column in await cursor.fetchall()]
 
             if 'text' not in reply_columns:
                 try:
-                    cursor.execute("ALTER TABLE replies ADD COLUMN text TEXT")
+                    await cursor.execute("ALTER TABLE replies ADD COLUMN text TEXT")
                     logger.info("Added column 'text' to 'replies' table.")
-                except sqlite3.Error as e:
-                    logger.error(f"Error adding column 'text' to 'replies' table: {e}")
+                except aiosqlite.Error as e:
+                    logger.error(f"Error adding column 'text' to 'replies' table: {e}", exc_info=True)
 
             # Image cache table
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS image_cache (
                     url_hash TEXT PRIMARY KEY,
                     description TEXT,
@@ -122,7 +124,7 @@ class DataManager:
             ''')
 
             # User profiles table
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     username TEXT PRIMARY KEY,
                     display_name TEXT,
@@ -137,73 +139,88 @@ class DataManager:
             ''')
 
             # Author notes table
-            cursor.execute('''
+            await cursor.execute('''
                 CREATE TABLE IF NOT EXISTS author_notes (
                     username TEXT PRIMARY KEY,
                     note_content TEXT
                 )
             ''')
 
-            self.conn.commit()
+            await self.conn.commit()
             logger.info("Database tables and schema migrations ensured.")
-        except sqlite3.Error as e:
-            logger.error(f"Error initializing database tables or performing migrations: {e}")
-            self.conn.rollback()
-        finally:
-            cursor.close()
+            except aiosqlite.Error as e:
+                logger.error(f"Database schema initialization failed: {e}", exc_info=True)
+                if self.conn: # Check if conn exists before trying to rollback
+                    try:
+                        await self.conn.rollback()
+                    except aiosqlite.Error as rb_err: # Log rollback error if it occurs
+                        logger.error(f"Rollback failed during schema initialization: {rb_err}", exc_info=True)
+                raise DatabaseError("Failed to initialize database schema.") from e
+            # No explicit cursor.close() needed with async with
 
     async def _load_index(self) -> None:
-        if self.index_file.exists():
+        # This method uses self.index_file which is not defined in the provided code.
+        # Assuming it's a Path object for a JSON file.
+        # For the purpose of this refactoring, I will assume self.index_file is defined elsewhere.
+        # If self.index_file is None or not configured, this method should handle it gracefully.
+        index_file_path = getattr(self, 'index_file', None)
+        if index_file_path and index_file_path.exists():
             try:
-                async with aiofiles.open(self.index_file, mode='r', encoding='utf-8') as f:
+                async with aiofiles.open(index_file_path, mode='r', encoding='utf-8') as f:
                     self.index = json.loads(await f.read())
             except (json.JSONDecodeError, IOError) as e:
-                logger.error(f"Error loading index.json: {e}. Resetting index.")
-                self.index = {'posts': {}, 'latest_scrape': None}
+                logger.error(f"Error loading index file {index_file_path}: {e}", exc_info=True)
+                # Decided to raise FileOperationError instead of resetting index silently.
+                # This makes the failure explicit.
+                raise FileOperationError(f"Failed to load or parse index file {index_file_path}") from e
+            except Exception as e: # Catch any other unexpected errors during file load
+                logger.error(f"Unexpected error loading index file {index_file_path}: {e}", exc_info=True)
+                raise FileOperationError(f"Unexpected error loading index file {index_file_path}") from e
         self.seen = set(self.index.get('posts', {}).keys())
 
     async def _load_seen_ids(self) -> None:
         """Load already processed post IDs from the database."""
         if not self.conn: return
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute("SELECT status_id FROM posts")
-            rows = cursor.fetchall()
-            self.seen = {row['status_id'] for row in rows}
-            logger.info(f"Loaded {len(self.seen)} seen post IDs from database.")
-        except sqlite3.Error as e:
-            logger.error(f"Error loading seen IDs from database: {e}")
-        finally:
-            cursor.close()
+        async with self.conn.cursor() as cursor: # async with
+            try:
+                await cursor.execute("SELECT status_id FROM posts")
+                rows = await cursor.fetchall()
+                self.seen = {row['status_id'] for row in rows}
+                logger.info(f"Loaded {len(self.seen)} seen post IDs from database.")
+            except aiosqlite.Error as e:
+                logger.error(f"Failed to load seen IDs from database: {e}", exc_info=True)
+                # This is a non-critical error for some operations, but might be for others.
+                # For now, logging and continuing. If it's critical, raise DatabaseError.
+        # No explicit cursor.close() needed
 
     async def _load_cache(self) -> None:
         """Load image description cache from the database."""
         if not self.conn: return
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute("SELECT url_hash, description FROM image_cache")
-            rows = cursor.fetchall()
-            self.image_cache = {row['url_hash']: row['description'] for row in rows}
-            logger.info(f"Loaded {len(self.image_cache)} items into image cache from database.")
-        except sqlite3.Error as e:
-            logger.error(f"Error loading image cache from database: {e}")
-        finally:
-            cursor.close()
+        async with self.conn.cursor() as cursor:
+            try:
+                await cursor.execute("SELECT url_hash, description FROM image_cache")
+                rows = await cursor.fetchall()
+                self.image_cache = {row['url_hash']: row['description'] for row in rows}
+                logger.info(f"Loaded {len(self.image_cache)} items into image cache from database.")
+            except aiosqlite.Error as e:
+                logger.error(f"Failed to load image cache from database: {e}", exc_info=True)
+                # Similar to _load_seen_ids, logging and continuing.
+        # No explicit cursor.close() needed
 
     # Removed _save_index as it's no longer needed with DB storage
 
-    async def get_user_profile(self, username: str) -> Optional['UserProfile']:
+    async def get_user_profile(self, username: str) -> Optional['UserProfile']: # Already async
         """Fetch a user profile from the database by username."""
         if not self.conn:
             logger.error("Database not connected. Cannot fetch user profile.")
             return None
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute(
-                "SELECT * FROM user_profiles WHERE username = ?",
-                (username,)
-            )
-            row = cursor.fetchone()
+        async with self.conn.cursor() as cursor: # async with
+            try:
+                await cursor.execute( # await
+                    "SELECT * FROM user_profiles WHERE username = ?",
+                    (username,)
+                )
+                row = await cursor.fetchone() # await
             if row:
                 from xread.models import UserProfile  # Local import to avoid circular import
                 return UserProfile(
@@ -219,11 +236,15 @@ class DataManager:
                 )
             else:
                 return None
-        except Exception as e:
-            logger.error(f"Error fetching user profile for {username}: {e}")
-            return None
-        finally:
-            cursor.close()
+            except aiosqlite.Error as e:
+                logger.error(f"Database error fetching user profile for {username}: {e}", exc_info=True)
+                # Depending on desired behavior, could return None or raise DatabaseError
+                # For now, returning None as per original logic for "not found" or DB error.
+                return None
+            except Exception as e: # Catch other unexpected errors
+                logger.error(f"Unexpected error fetching user profile for {username}: {e}", exc_info=True)
+                raise DatabaseError(f"Unexpected error fetching profile for {username}") from e
+        # No explicit cursor.close() needed
 
     async def __aenter__(self):
         """Asynchronous context manager entry point."""
@@ -231,14 +252,16 @@ class DataManager:
         logger.info("DataManager entered context and initialized.")
         return self
 
-    def close(self) -> None:
-        """Close the database connection (synchronous)."""
+    async def close(self) -> None: # Changed to async def
+        """Close the database connection (asynchronous)."""
         if self.conn:
             try:
-                self.conn.close()
+                await self.conn.close() # await
                 logger.info("Database connection closed.")
-            except sqlite3.Error as e:
-                logger.error(f"Error closing database connection: {e}")
+            except aiosqlite.Error as e:
+                logger.error(f"Error closing database connection: {e}", exc_info=True)
+                # This error happens during shutdown, not much to do other than log.
+                # Consider if this should raise DatabaseError, but it might hide the original exception if __aexit__ is cleaning up.
             finally:
                 self.conn = None # Ensure connection is marked as None
         else:
@@ -247,14 +270,14 @@ class DataManager:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Asynchronous context manager exit point."""
         logger.info("DataManager exiting context.")
-        self.close() # Call synchronous close
+        await self.close() # Changed to await
 
-    def _ensure_scalar(self, value):
+    def _ensure_scalar(self, value): # This method is synchronous and fine
         if isinstance(value, (list, dict)):
             return json.dumps(value)
         return value
 
-    async def save(
+    async def save( # Already async
         self,
         data: ScrapedData,
         original_url: str,
@@ -267,6 +290,7 @@ class DataManager:
             logger.error("Database not connected. Cannot save.")
             return None
 
+        # sid logic remains synchronous
         sid = data.main_post.status_id
         if not sid:
             first_reply_sid = next((r.status_id for r in data.replies if r.status_id), None)
@@ -277,14 +301,15 @@ class DataManager:
                 logger.error("No status ID found. Skipping save.")
                 return None
 
-        if sid in self.seen:
+        if sid in self.seen: # self.seen is in-memory, no await needed
             logger.info(f"Post {sid} already saved. Skipping.")
             return None
 
-        cursor = self.conn.cursor()
-        try:
-            scrape_date = datetime.now(timezone.utc).isoformat()
-            images_json = json.dumps([img.__dict__ for img in data.main_post.images])
+        async with self.conn.cursor() as cursor: # async with
+            try:
+                # scrape_date and images_json are synchronous preparations
+                scrape_date = datetime.now(timezone.utc).isoformat()
+                images_json = json.dumps([img.__dict__ for img in data.main_post.images])
 
             # Defensive serialization of topic_tags
             topic_tags_value = data.main_post.topic_tags
@@ -308,7 +333,7 @@ class DataManager:
             logger.debug(f"Saving post {sid} with topic_tags type: {type(topic_tags_value)} and value: {topic_tags_value}")
 
             # Insert into posts table with new columns
-            cursor.execute(
+            await cursor.execute( # await
                 """
                 INSERT INTO posts (
                     status_id, author, username, text, date, permalink, images_json, 
@@ -339,18 +364,18 @@ class DataManager:
             for reply in data.replies:
                 reply_images_json = json.dumps([img.__dict__ for img in reply.images])
                 # Check if a reply with this permalink already exists
-                cursor.execute("SELECT reply_db_id FROM replies WHERE permalink = ?", (reply.permalink,))
-                if cursor.fetchone():
+                await cursor.execute("SELECT reply_db_id FROM replies WHERE permalink = ?", (reply.permalink,)) # await
+                if await cursor.fetchone(): # await
                     logger.info(f"Reply with permalink {reply.permalink} already exists. Skipping insertion.")
                     continue
-                cursor.execute(
+                await cursor.execute( # await
                     "INSERT INTO replies (post_status_id, status_id, user, username, text, date, permalink, images_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (sid, reply.status_id, reply.user, reply.username, reply.text, reply.date,
                      reply.permalink, reply_images_json)
                 )
 
-            self.conn.commit()
-            self.seen.add(sid)
+            await self.conn.commit() # await
+            self.seen.add(sid) # self.seen is in-memory
             logger.info(f"Saved post {sid} to database.")
             
             # Also save to JSON file
@@ -375,160 +400,167 @@ class DataManager:
             logger.info(f"save: json_data = {json.dumps(json_data, indent=2, ensure_ascii=False)}")
             json_file_path = self.data_dir / 'scraped_data' / f'post_{sid}.json'
             json_file_path.parent.mkdir(parents=True, exist_ok=True)
-            async with aiofiles.open(json_file_path, mode='w', encoding='utf-8') as f:
+            async with aiofiles.open(json_file_path, mode='w', encoding='utf-8') as f: # aiofiles is already async
                 await f.write(json.dumps(json_data, indent=2, ensure_ascii=False))
             logger.info(f"Saved post {sid} to JSON file at {json_file_path}.")
             
             return sid
-        except sqlite3.IntegrityError as e:
-            logger.warning(f"Integrity error saving post {sid}: {e}")
-            self.conn.rollback()
-            return None
-        except sqlite3.Error as e:
-            logger.error(f"Error saving post {sid} to database: {e} - Type: {type(e)}, Args: {e.args}")
-            self.conn.rollback()
-            return None
-        except IOError as e:
-            logger.error(f"Error saving post {sid} to JSON file: {e} - Type: {type(e)}, Args: {e.args}")
-            return sid  # Return sid even if JSON save fails, since DB save succeeded
+            except aiosqlite.IntegrityError as e:
+                logger.warning(f"Integrity error saving post {sid}: {e}", exc_info=True) # Log original
+                await self.conn.rollback()
+                # Depending on how critical this is, could return None or raise.
+                # For now, returning None to indicate save did not fully complete as new.
+                return None # Or: raise DatabaseError(f"Integrity constraint violated for post {sid}") from e
+            except aiosqlite.Error as e:
+                logger.error(f"Database error saving post {sid}: {e}", exc_info=True)
+                await self.conn.rollback()
+                raise DatabaseError(f"Failed to save post {sid} to database") from e
+            except IOError as e: # For aiofiles operations
+                logger.error(f"File operation error saving post {sid} to JSON: {e}", exc_info=True)
+                # If DB save succeeded, sid is returned. If JSON save is critical, this might change.
+                # For now, raising FileOperationError but this means the DB part was successful.
+                # This could lead to inconsistency if not handled carefully by the caller.
+                # A more robust approach might involve a two-phase commit or cleanup.
+                raise FileOperationError(f"Failed to save JSON for post {sid}, but database save may have succeeded.") from e
+        # No explicit cursor.close() needed
 
-    async def delete(self, status_id: str) -> bool:
+    async def delete(self, status_id: str) -> bool: # Already async
         """Delete a saved post by status ID from the database and file system."""
         if not self.conn:
             logger.error("Database not connected. Cannot delete post.")
             return False
         
-        cursor = self.conn.cursor()
-        try:
-            # Delete the post from the database (replies will be deleted automatically due to CASCADE)
-            cursor.execute("DELETE FROM posts WHERE status_id = ?", (status_id,))
-            if cursor.rowcount > 0:
-                self.conn.commit()
-                self.seen.discard(status_id)
-                logger.info(f"Deleted post {status_id} from database.")
-                
-                # Attempt to delete the corresponding JSON file
-                json_file_path = self.data_dir / 'scraped_data' / f'post_{status_id}.json'
-                if json_file_path.exists():
-                    try:
-                        json_file_path.unlink()
-                        logger.info(f"Deleted JSON file for post {status_id} at {json_file_path}.")
-                    except Exception as e:
-                        logger.error(f"Error deleting JSON file for post {status_id}: {e}")
-                return True
-            else:
-                self.conn.rollback()
-                logger.warning(f"Post {status_id} not found in database.")
-                return False
-        except sqlite3.Error as e:
-            logger.error(f"Error deleting post {status_id} from database: {e}")
-            self.conn.rollback()
-            return False
-        finally:
-            cursor.close()
+        async with self.conn.cursor() as cursor: # async with
+            try:
+                # Delete the post from the database (replies will be deleted automatically due to CASCADE)
+                await cursor.execute("DELETE FROM posts WHERE status_id = ?", (status_id,)) # await
+                # rowcount for aiosqlite cursor is available after execute
+                if cursor.rowcount > 0:
+                    await self.conn.commit() # await
+                    self.seen.discard(status_id) # self.seen is in-memory
+                    logger.info(f"Deleted post {status_id} from database.")
+                    
+                    # Attempt to delete the corresponding JSON file
+                    json_file_path = self.data_dir / 'scraped_data' / f'post_{status_id}.json'
+                    if json_file_path.exists():
+                        try:
+                            json_file_path.unlink() # This is a synchronous file operation
+                            logger.info(f"Deleted JSON file for post {status_id} at {json_file_path}.")
+                        except Exception as e:
+                            logger.error(f"Error deleting JSON file for post {status_id}: {e}")
+                    return True
+                else:
+                    await self.conn.rollback() # await
+                    logger.warning(f"Post {status_id} not found in database.")
+                    return False
+            except aiosqlite.Error as e:
+                logger.error(f"Database error deleting post {status_id}: {e}", exc_info=True)
+                if self.conn: await self.conn.rollback() # Check conn before rollback
+                raise DatabaseError(f"Failed to delete post {status_id}") from e
+        # No explicit cursor.close() needed
 
-    def list_meta(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    async def list_meta(self, limit: Optional[int] = None) -> List[Dict[str, Any]]: # Already async def
         """List metadata of saved posts, optionally limited to a number."""
         if not self.conn:
             logger.error("Database not connected. Cannot list posts.")
             return []
         
-        cursor = self.conn.cursor()
-        try:
-            query = "SELECT status_id, author, scrape_date FROM posts ORDER BY scrape_date DESC"
-            if limit is not None:
-                query += f" LIMIT {limit}"
-            cursor.execute(query)
-            rows = cursor.fetchall()
-            return [{"status_id": row["status_id"], "author": row["author"], "scrape_date": row["scrape_date"]} for row in rows]
-        except sqlite3.Error as e:
-            logger.error(f"Error listing posts: {e}")
-            return []
-        finally:
-            cursor.close()
+        async with self.conn.cursor() as cursor: # async with
+            try:
+                query = "SELECT status_id, author, scrape_date FROM posts ORDER BY scrape_date DESC"
+                if limit is not None:
+                    query += f" LIMIT {limit}"
+                await cursor.execute(query) # await
+                rows = await cursor.fetchall() # await
+                return [{"status_id": row["status_id"], "author": row["author"], "scrape_date": row["scrape_date"]} for row in rows]
+            except aiosqlite.Error as e:
+                logger.error(f"Database error listing metadata: {e}", exc_info=True)
+                raise DatabaseError("Failed to list post metadata") from e
+        # No explicit cursor.close() needed
 
-    async def delete_all(self) -> bool:
+    async def delete_all(self) -> bool: # Already async
         """Delete all saved posts from the database and corresponding JSON files from the file system."""
         if not self.conn:
             logger.error("Database not connected. Cannot delete all posts.")
             return False
         
-        cursor = self.conn.cursor()
-        try:
-            # Delete all posts from the database (replies will be deleted automatically due to CASCADE)
-            cursor.execute("DELETE FROM posts")
-            deleted_count = cursor.rowcount
-            self.conn.commit()
-            self.seen.clear()
-            logger.info(f"Deleted {deleted_count} posts from database.")
-            
-            # Attempt to delete all JSON files in the scraped_data directory
-            scraped_data_dir = self.data_dir / 'scraped_data'
-            if scraped_data_dir.exists():
-                for json_file in scraped_data_dir.glob('post_*.json'):
-                    try:
-                        json_file.unlink()
-                        logger.info(f"Deleted JSON file at {json_file}.")
-                    except Exception as e:
-                        logger.error(f"Error deleting JSON file at {json_file}: {e}")
-            return True
-        except sqlite3.Error as e:
-            logger.error(f"Error deleting all posts from database: {e}")
-            self.conn.rollback()
-            return False
-        finally:
-            cursor.close()
+        async with self.conn.cursor() as cursor: # async with
+            try:
+                # Delete all posts from the database (replies will be deleted automatically due to CASCADE)
+                await cursor.execute("DELETE FROM posts") # await
+                deleted_count = cursor.rowcount # rowcount is available after execute
+                await self.conn.commit() # await
+                self.seen.clear() # self.seen is in-memory
+                logger.info(f"Deleted {deleted_count} posts from database.")
+                
+                # Attempt to delete all JSON files in the scraped_data directory
+                scraped_data_dir = self.data_dir / 'scraped_data'
+                if scraped_data_dir.exists():
+                    for json_file in scraped_data_dir.glob('post_*.json'):
+                        try:
+                            json_file.unlink() # Synchronous file operation
+                            logger.info(f"Deleted JSON file at {json_file}.")
+                        except Exception as e:
+                            logger.error(f"Error deleting JSON file at {json_file}: {e}")
+                return True
+            except aiosqlite.Error as e:
+                logger.error(f"Database error deleting all posts: {e}", exc_info=True)
+                if self.conn: await self.conn.rollback()
+                raise DatabaseError("Failed to delete all posts") from e
+        # No explicit cursor.close() needed
 
-    async def save_author_note(self, author_note: 'AuthorNote') -> bool:
+    async def save_author_note(self, author_note: 'AuthorNote') -> bool: # Already async
         """Save or update an author note in the database."""
         if not self.conn:
             logger.error("Database not connected. Cannot save author note.")
             return False
         
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO author_notes (username, note_content)
-                VALUES (?, ?)
-                """,
-                (author_note.username, author_note.note_content)
-            )
-            self.conn.commit()
-            logger.info(f"Saving author note for {author_note.username}: {author_note.note_content}")
-            return True
-        except sqlite3.Error as e:
-            logger.error(f"Error saving author note for {author_note.username}: {author_note.note_content} {e}")
-            self.conn.rollback()
-            return False
-        finally:
-            cursor.close()
+        async with self.conn.cursor() as cursor: # async with
+            try:
+                await cursor.execute( # await
+                    """
+                    INSERT OR REPLACE INTO author_notes (username, note_content)
+                    VALUES (?, ?)
+                    """,
+                    (author_note.username, author_note.note_content)
+                )
+                await self.conn.commit() # await
+                logger.info(f"Saving author note for {author_note.username}: {author_note.note_content}")
+                return True
+            except aiosqlite.Error as e:
+                logger.error(f"Database error saving author note for {author_note.username}: {e}", exc_info=True)
+                if self.conn: await self.conn.rollback()
+                raise DatabaseError(f"Failed to save author note for {author_note.username}") from e
+        # No explicit cursor.close() needed
 
-    async def get_author_note(self, username: str) -> Optional['AuthorNote']:
+    async def get_author_note(self, username: str) -> Optional['AuthorNote']: # Already async
         """Retrieve an author note from the database by username."""
         if not self.conn:
             logger.error("Database not connected. Cannot fetch author note.")
             return None
         
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute(
-                "SELECT * FROM author_notes WHERE username = ?",
-                (username,)
-            )
-            row = cursor.fetchone()
-            if row:
-                logger.info(f"get_author_note: Author note found for {username}: {row['note_content']}")
-                from xread.models import AuthorNote  # Local import to avoid circular import
-                return AuthorNote(
-                    username=row["username"],
-                    note_content=row["note_content"]
+        async with self.conn.cursor() as cursor: # async with
+            try:
+                await cursor.execute( # await
+                    "SELECT * FROM author_notes WHERE username = ?",
+                    (username,)
                 )
-            else:
-                logger.info(f"get_author_note: No author note found for {username}")
+                row = await cursor.fetchone() # await
+                if row:
+                    logger.info(f"get_author_note: Author note found for {username}: {row['note_content']}")
+                    from xread.models import AuthorNote  # Local import to avoid circular import
+                    return AuthorNote( # No changes to model instantiation
+                        username=row["username"],
+                        note_content=row["note_content"]
+                    )
+                else:
+                    logger.info(f"get_author_note: No author note found for {username}")
+                    return None
+            except aiosqlite.Error as e:
+                logger.error(f"Database error fetching author note for {username}: {e}", exc_info=True)
+                # Returning None as per original logic for "not found" or DB error
                 return None
-        except sqlite3.Error as e:
-            logger.error(f"Error fetching author note for {username}: {e}")
-            return None
-        finally:
-            cursor.close()
+            except Exception as e: # Catch other unexpected errors
+                logger.error(f"Unexpected error fetching author note for {username}: {e}", exc_info=True)
+                raise DatabaseError(f"Unexpected error fetching author note for {username}") from e
+        # No explicit cursor.close() needed

@@ -3,44 +3,44 @@
 from pathlib import Path
 
 # Global constants
-DEFAULT_DATA_DIR = Path("scraped_data")
-DEFAULT_NITTER_BASE_URL = "https://nitter.net"
-DEFAULT_MAX_IMAGE_DOWNLOADS = 5
-DEFAULT_RETRY_ATTEMPTS = 3
-DEFAULT_RETRY_DELAY = 2
-MAX_IMAGE_SIZE = 10 * 1024 * 1024     # 10MB
-NA_PLACEHOLDER = "N/A"
-PAGE_READY_SELECTOR = "div.container"
+DEFAULT_DATA_DIR: Path = Path("scraped_data")
+DEFAULT_NITTER_BASE_URL: str = "https://nitter.net"
+DEFAULT_MAX_IMAGE_DOWNLOADS: int = 5
+DEFAULT_RETRY_ATTEMPTS: int = 3
+DEFAULT_RETRY_DELAY: int = 2
+MAX_IMAGE_SIZE: int = 10 * 1024 * 1024     # 10MB
+NA_PLACEHOLDER: str = "N/A"
+PAGE_READY_SELECTOR: str = "div.container"
 
 class TimeoutConstants:
     """Constants for various timeout durations used in the application."""
-    PLAYWRIGHT_PAGE_LOAD_MS = 35000
-    PLAYWRIGHT_SELECTOR_MS = 7000
-    PLAYWRIGHT_POST_LOAD_DELAY_MS = 3000
-    IMAGE_DOWNLOAD_SECONDS = 10
+    PLAYWRIGHT_PAGE_LOAD_MS: int = 35000
+    PLAYWRIGHT_SELECTOR_MS: int = 7000
+    PLAYWRIGHT_POST_LOAD_DELAY_MS: int = 3000
+    IMAGE_DOWNLOAD_SECONDS: int = 10
 
 class FileFormats:
     """Constants for file and directory naming conventions."""
-    DEBUG_DIR = "debug_output"
-    HISTORY_FILE = ".xread_history"
-    INDEX_FILE = "index.json"
-    CACHE_DIR = "cache"
-    POST_PREFIX = "post_"
-    JSON_EXTENSION = ".json"
-    FAILED_PARSE_PREFIX = "failed_parse_"
-    HTML_EXTENSION = ".html"
+    DEBUG_DIR: str = "debug_output"
+    HISTORY_FILE: str = ".xread_history"
+    INDEX_FILE: str = "index.json"
+    CACHE_DIR: str = "cache"
+    POST_PREFIX: str = "post_"
+    JSON_EXTENSION: str = ".json"
+    FAILED_PARSE_PREFIX: str = "failed_parse_"
+    HTML_EXTENSION: str = ".html"
 
 class ErrorMessages:
     """Constants for error message strings."""
-    API_KEY_MISSING = "PERPLEXITY_API_KEY required for report generation"
-    BROWSER_NOT_LAUNCHED = "Browser not launched."
-    FETCH_FAILED = "Fetch failed."
-    PARSE_FAILED = "Parse failed."
-    PERPLEXITY_API_FAILED = "Failed to generate Perplexity report."
+    API_KEY_MISSING: str = "PERPLEXITY_API_KEY required for report generation"
+    BROWSER_NOT_LAUNCHED: str = "Browser not launched."
+    FETCH_FAILED: str = "Fetch failed."
+    PARSE_FAILED: str = "Parse failed."
+    PERPLEXITY_API_FAILED: str = "Failed to generate Perplexity report."
 
 # Prompt templates
 # Define the Perplexity prompt template for reference
-PERPLEXITY_REPORT_PROMPT = """
+PERPLEXITY_REPORT_PROMPT: str = """
 Please provide a comprehensive, detailed, and factual analysis of the following Twitter/X thread.
 Pay close attention to ALL of the following requirements:
 
@@ -77,7 +77,7 @@ Thread Content:
 """
 
 # Define the Gemini prompt template with specific instruction for Factual Context section
-GEMINI_REPORT_PROMPT = """
+GEMINI_REPORT_PROMPT: str = """
 Please provide a comprehensive, detailed, and factual analysis of the following Twitter/X thread.
 Pay close attention to ALL of the following requirements:
 

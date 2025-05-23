@@ -28,7 +28,7 @@ class Post:
     replies_count: Optional[int] = 0
     topic_tags: Optional[List[str]] = field(default_factory=list)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.permalink and self.permalink != "N/A":
             match = re.search(settings.status_id_regex, self.permalink)
             if match:
