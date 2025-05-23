@@ -65,14 +65,17 @@ class ScraperPipeline:
         except Exception as e:
             logger.error(f"Could not save failed HTML to {fpath}: {e}")
 
-    async def _prepare_url(self, url: str) -> tuple[str, Optional[str]]:
-        """Prepare and normalize the URL for scraping, extracting the status ID."""
+    async def _normalize_url_and_extract_sid(self, url: str) -> tuple[str, Optional[str]]:
+        """Normalize the URL and extract the status ID."""
         normalized_url = self.scraper.normalize_url(url)
         sid_match = re.search(settings.status_id_regex, normalized_url)
         sid = sid_match.group(1) if sid_match else None
         if not sid:
             raise ValueError("Status ID extraction failed.")
         return normalized_url, sid
+
+    async def _prepare_url(self, url: str) -> tuple[str, Optional[str]]:
+        return await self._normalize_url_and_extract_sid(url)
 
     async def _fetch_and_parse(self, normalized_url: str, sid: str) -> tuple[Optional[str], Optional[ScrapedData]]:
         """Fetch HTML content and parse it into structured data."""
@@ -117,9 +120,15 @@ class ScraperPipeline:
             except Exception as e:
                 logger.warning(f"Error closing page: {e}")
 
+    async def _extract_image_processing(self, scraped_data: ScrapedData) -> ScrapedData:
+        # Placeholder for image processing logic as per TODO
+        # Implement actual image processing here if needed
+        return scraped_data
+
     async def _generate_ai_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
-        """Generate a factual report using the selected AI model based on the scraped text content and images."""
-        return await self.ai_model.generate_report(scraped_data, sid)
+        """Generate a factual report using the selected AI model."""
+        processed_data = await self._extract_image_processing(scraped_data)
+        return await self.ai_model.generate_report(processed_data, sid)
 
     async def _save_results(
         self,
@@ -269,20 +278,22 @@ class ScraperPipeline:
             await self._save_results(scraped_data, url, ai_report, sid, author_profile, url_sid)
             # Play notification sound after successful scrape and save
             play_ding()
+        except Exception as e:
+            await self._handle_error(e, url, html_content, scraped_data, sid)
+        finally:
+            await self.close_browser()
 
-        except KeyboardInterrupt:
+    async def _handle_error(self, e: Exception, url: str, html_content: str, scraped_data: ScrapedData, sid: str) -> None:
+        if isinstance(e, KeyboardInterrupt):
             logger.info("Received KeyboardInterrupt, closing browser...")
             await self.close_browser()
             typer.echo("Process interrupted by user. Browser closed.")
-            raise  # Re-raise to exit cleanly
-        except ValueError as e:
+            raise e
+        elif isinstance(e, ValueError):
             logger.error(f"URL/Input error: {e}")
             typer.echo(f"Error: {e}", err=True)
-        except Exception as e:
+        else:
             logger.exception(f"Unexpected pipeline error for {url}: {e}")
             typer.echo(f"Error: An unexpected error occurred: {e}", err=True)
             if html_content and scraped_data is None:
                 await self._save_failed_html(sid, html_content)
-        finally:
-            # Ensure browser is closed in case of any other unhandled exceptions
-            await self.close_browser()
