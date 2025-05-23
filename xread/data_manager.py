@@ -47,6 +47,10 @@ class AsyncDataManager:
         """Create database tables if they don't exist and perform migrations."""
         if not self.conn:
             raise ConnectionError("Database not connected.")
+        await self._create_tables_and_migrate()
+
+    async def _create_tables_and_migrate(self) -> None:
+        """Extracted: Create all tables and perform schema migrations."""
         cursor = await self.conn.cursor()
         try:
             # Main posts table
@@ -88,7 +92,6 @@ class AsyncDataManager:
                         logger.info(f"Added column '{col_name}' to 'posts' table.")
                     except aiosqlite.Error as e:
                         logger.error(f"Error adding column '{col_name}' to 'posts' table: {e}")
-                        # Depending on severity, you might want to raise or handle differently
 
             # Replies table
             await cursor.execute('''
@@ -335,24 +338,9 @@ class AsyncDataManager:
             logger.info(f"Saved post {sid} to database.")
             
             # Also save to JSON file
-            main_post_dict = data.main_post.__dict__.copy()
-            main_post_dict['images'] = [img.__dict__ for img in data.main_post.images]
-            replies_dicts = []
-            for reply in data.replies:
-                reply_dict = reply.__dict__.copy()
-                reply_dict['images'] = [img.__dict__ for img in reply.images]
-                replies_dicts.append(reply_dict)
-            json_data = {
-                "main_post": main_post_dict,
-                "replies": replies_dicts,
-                "original_url": original_url,
-                "scrape_date": scrape_date,
-                "ai_report": ai_report,
-                "author_profile": author_profile.to_dict() if author_profile else None,
-                "author_note": author_note.note_content if author_note else None,
-                "factual_context": data.factual_context, # Add factual_context to JSON
-                "source": data.source # Add source to JSON
-            }
+            json_data = self._serialize_to_json(
+                data, original_url, scrape_date, ai_report, author_profile, author_note
+            )
             logger.info(f"save: json_data = {json.dumps(json_data, indent=2, ensure_ascii=False)}")
             json_file_path = self.data_dir / 'scraped_data' / f'post_{sid}.json'
             json_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -371,6 +359,35 @@ class AsyncDataManager:
         except IOError as e:
             logger.error(f"Error saving post {sid} to JSON file: {e} - Type: {type(e)}, Args: {e.args}")
             return sid  # Return sid even if JSON save fails, since DB save succeeded
+
+    def _serialize_to_json(
+        self,
+        data: ScrapedData,
+        original_url: str,
+        scrape_date: str,
+        ai_report: Optional[str],
+        author_profile: Optional['UserProfile'],
+        author_note: Optional['AuthorNote']
+    ) -> dict:
+        """Extracted: Serialize scraped data and metadata to a JSON-serializable dict."""
+        main_post_dict = data.main_post.__dict__.copy()
+        main_post_dict['images'] = [img.__dict__ for img in data.main_post.images]
+        replies_dicts = []
+        for reply in data.replies:
+            reply_dict = reply.__dict__.copy()
+            reply_dict['images'] = [img.__dict__ for img in reply.images]
+            replies_dicts.append(reply_dict)
+        return {
+            "main_post": main_post_dict,
+            "replies": replies_dicts,
+            "original_url": original_url,
+            "scrape_date": scrape_date,
+            "ai_report": ai_report,
+            "author_profile": author_profile.to_dict() if author_profile else None,
+            "author_note": author_note.note_content if author_note else None,
+            "factual_context": data.factual_context,
+            "source": data.source
+        }
 
     async def delete(self, status_id: str) -> bool:
         """Delete a saved post by status ID from the database and file system."""

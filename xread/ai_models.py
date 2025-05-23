@@ -94,62 +94,11 @@ class PerplexityModel(BaseAIModel):
 
         # First attempt: Multimodal call with images if available
         if image_content:
-            logger.info(f"Attempting multimodal Perplexity API call for post {sid}")
-            multimodal_content = []
-            multimodal_content.append({
-                "type": "text",
-                "text": prompt_text
-            })
-            for img in image_content:
-                if 'original_url' in img and img['original_url']:
-                    multimodal_content.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": img['original_url']
-                        }
-                    })
-                    logger.info(f"Added image with direct URL: {img['original_url']}")
-                else:
-                    logger.warning(f"Skipping image without original URL: {img.get('original_url', 'N/A')}")
-            
-            user_message["content"] = multimodal_content
-            messages = [user_message]  # Only user message for multimodal call
-            payload["messages"] = messages
-            
-            try:
-                # Log the payload for debugging (only the structure, not the actual image data)
-                debug_payload = payload.copy()
-                debug_payload["messages"] = [debug_payload["messages"][0].copy()]
-                if isinstance(debug_payload["messages"][0]["content"], list):
-                    for i, item in enumerate(debug_payload["messages"][0]["content"]):
-                        if item.get("type") == "image_url" and "image_url" in item:
-                            url = item["image_url"]["url"]
-                            if url.startswith("data:"):
-                                # Truncate the base64 data for logging
-                                parts = url.split(",")
-                                if len(parts) > 1:
-                                    debug_payload["messages"][0]["content"][i]["image_url"]["url"] = f"{parts[0]},<base64_data_truncated>"
-
-                logger.info(f"Sending multimodal request to Perplexity API for post {sid} with payload structure: {debug_payload}")
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        "https://api.perplexity.ai/chat/completions",
-                        headers=headers,
-                        json=payload
-                    ) as response:
-                        if response.status != 200:
-                            logger.error(f"Multimodal Perplexity API call returned status code {response.status} for post {sid}")
-                            # Log the error response
-                            error_body = await response.text()
-                            logger.error(f"Error response: {error_body}")
-                            raise Exception(f"Multimodal API call failed with status {response.status}. Details: {error_body}")
-                        data = await response.json()
-                        logger.info(f"Multimodal Perplexity API request successful for post {sid}")
-                        return data["choices"][0]["message"]["content"]
-            except Exception as e:
-                logger.exception(f"Error in multimodal Perplexity API call for post {sid}: {e}")
-                logger.info(f"Falling back to text-only Perplexity API call for post {sid}")
+            multimodal_result = await self._generate_multimodal_report(
+                prompt_text, image_content, user_message, payload, headers, sid
+            )
+            if multimodal_result is not None:
+                return multimodal_result
 
         # Fallback: Text-only call if no images or if multimodal call failed
         logger.info(f"Attempting text-only Perplexity API call for post {sid}")
@@ -157,7 +106,61 @@ class PerplexityModel(BaseAIModel):
         payload["messages"] = messages
 
         try:
-            logger.info(f"Sending text-only request to Perplexity API for post {sid}")
+            return await self._generate_text_only_report(headers, payload, sid)
+        except Exception as e:
+            return await self._handle_perplexity_error(e, sid)
+    
+    async def _generate_multimodal_report(
+        self,
+        prompt_text: str,
+        image_content: list,
+        user_message: dict,
+        payload: dict,
+        headers: dict,
+        sid: str
+    ) -> Optional[str]:
+        """
+        Handle the multimodal Perplexity API call logic as a separate method.
+        Returns the report string if successful, or None if fallback is needed.
+        """
+        logger.info(f"Attempting multimodal Perplexity API call for post {sid}")
+        multimodal_content = []
+        multimodal_content.append({
+            "type": "text",
+            "text": prompt_text
+        })
+        for img in image_content:
+            if 'original_url' in img and img['original_url']:
+                multimodal_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": img['original_url']
+                    }
+                })
+                logger.info(f"Added image with direct URL: {img['original_url']}")
+            else:
+                logger.warning(f"Skipping image without original URL: {img.get('original_url', 'N/A')}")
+
+        user_message["content"] = multimodal_content
+        messages = [user_message]  # Only user message for multimodal call
+        payload["messages"] = messages
+
+        try:
+            # Log the payload for debugging (only the structure, not the actual image data)
+            debug_payload = payload.copy()
+            debug_payload["messages"] = [debug_payload["messages"][0].copy()]
+            if isinstance(debug_payload["messages"][0]["content"], list):
+                for i, item in enumerate(debug_payload["messages"][0]["content"]):
+                    if item.get("type") == "image_url" and "image_url" in item:
+                        url = item["image_url"]["url"]
+                        if url.startswith("data:"):
+                            # Truncate the base64 data for logging
+                            parts = url.split(",")
+                            if len(parts) > 1:
+                                debug_payload["messages"][0]["content"][i]["image_url"]["url"] = f"{parts[0]},<base64_data_truncated>"
+
+            logger.info(f"Sending multimodal request to Perplexity API for post {sid} with payload structure: {debug_payload}")
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     "https://api.perplexity.ai/chat/completions",
@@ -165,19 +168,40 @@ class PerplexityModel(BaseAIModel):
                     json=payload
                 ) as response:
                     if response.status != 200:
-                        logger.error(f"Text-only Perplexity API call returned status code {response.status} for post {sid}")
+                        logger.error(f"Multimodal Perplexity API call returned status code {response.status} for post {sid}")
+                        # Log the error response
                         error_body = await response.text()
                         logger.error(f"Error response: {error_body}")
-                        return f"Error: Text-only Perplexity API call failed with status {response.status}. Details: {error_body}"
+                        raise Exception(f"Multimodal API call failed with status {response.status}. Details: {error_body}")
                     data = await response.json()
-                    logger.info(f"Text-only Perplexity API request successful for post {sid}")
+                    logger.info(f"Multimodal Perplexity API request successful for post {sid}")
                     return data["choices"][0]["message"]["content"]
         except Exception as e:
-            logger.exception(f"Error in text-only Perplexity API call for post {sid}: {e}")
-            import traceback
-            error_traceback = traceback.format_exc()
-            logger.error(f"Traceback: {error_traceback}")
-            return f"Error: Failed to generate Perplexity report (both multimodal and text-only attempts failed). Exception: {e}. Check logs for details."
+            logger.exception(f"Error in multimodal Perplexity API call for post {sid}: {e}")
+            logger.info(f"Falling back to text-only Perplexity API call for post {sid}")
+            return None
+
+    async def _handle_perplexity_error(self, e: Exception, sid: str) -> Optional[str]:
+        logger.exception(f"Error in Perplexity API call for post {sid}: {e}")
+        import traceback
+        error_traceback = traceback.format_exc()
+        logger.error(f"Traceback: {error_traceback}")
+        return f"Error: Failed to generate Perplexity report. Exception: {e}. Check logs for details."
+
+    async def _generate_text_only_report(self, headers: Dict, payload: Dict, sid: str) -> Optional[str]:
+        logger.info(f"Sending text-only request to Perplexity API for post {sid}")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                if response.status != 200:
+                    error_body = await response.text()
+                    logger.error(f"Text-only API call failed: {error_body}")
+                    return f"Error: Text-only API call failed with status {response.status}"
+                data = await response.json()
+                return data["choices"][0]["message"]["content"]
 
     async def _process_images_perplexity(self, scraped_data: ScrapedData, sid: str) -> List[Dict[str, Any]]:
         """Process images for use with Perplexity AI API.
