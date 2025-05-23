@@ -225,6 +225,30 @@ class DataManager:
         finally:
             cursor.close()
 
+    async def __aenter__(self):
+        """Asynchronous context manager entry point."""
+        await self.initialize()
+        logger.info("DataManager entered context and initialized.")
+        return self
+
+    def close(self) -> None:
+        """Close the database connection (synchronous)."""
+        if self.conn:
+            try:
+                self.conn.close()
+                logger.info("Database connection closed.")
+            except sqlite3.Error as e:
+                logger.error(f"Error closing database connection: {e}")
+            finally:
+                self.conn = None # Ensure connection is marked as None
+        else:
+            logger.info("No active database connection to close.")
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Asynchronous context manager exit point."""
+        logger.info("DataManager exiting context.")
+        self.close() # Call synchronous close
+
     def _ensure_scalar(self, value):
         if isinstance(value, (list, dict)):
             return json.dumps(value)

@@ -39,6 +39,19 @@ class ScraperPipeline:
             self.ai_model = PerplexityModel()
             logger.info("Using Perplexity AI model for report generation.")
 
+    async def __aenter__(self):
+        """Asynchronously initialize the browser when entering the context."""
+        await self.initialize_browser()
+        logger.info("ScraperPipeline entered context, browser initialized.")
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Asynchronously close the browser when exiting the context."""
+        logger.info("ScraperPipeline exiting context, closing browser...")
+        await self.close_browser()
+        if exc_type:
+            logger.error(f"ScraperPipeline exited with exception: {exc_type.__name__}", exc_info=(exc_type, exc_val, exc_tb))
+
     async def initialize_browser(self) -> None:
         """Launch the Playwright browser if not already started."""
         if not self._browser_ready:
