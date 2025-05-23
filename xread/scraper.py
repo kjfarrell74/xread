@@ -9,57 +9,73 @@ from playwright.async_api import Page
 from xread.settings import settings, logger
 from xread.constants import PAGE_READY_SELECTOR, TimeoutConstants, NA_PLACEHOLDER
 from xread.models import ScrapedData, Post, Image
-from xread.utils import with_retry
+from xread.core.utils import with_retry
 
 class NitterScraper:
     """Scrapes data from a Nitter instance using Playwright and BeautifulSoup."""
     def __init__(self):
-        self.base_url = str(settings.nitter_base_url).rstrip('/')
+        self.base_urls = [str(url).rstrip('/') for url in settings.nitter_instances]
+        self.base_url = self.base_urls[0] if self.base_urls else str(settings.nitter_base_url).rstrip('/')
 
-    def normalize_url(self, url: str) -> str:
+    def normalize_url(self, url: str, base_url: str = None) -> str:
         """Normalize user-provided URL to a Nitter URL."""
         url = url.strip()
         match = re.search(settings.full_url_regex, url, re.IGNORECASE)
         if match:
             user, sid = match.groups()
-            return f"{self.base_url}/{user}/status/{sid}"
+            return f"{base_url or self.base_url}/{user}/status/{sid}"
         raise ValueError(f"Invalid URL format: {url}")
 
-    @with_retry()
     async def fetch_html(self, page: Page, url: str) -> Optional[str]:
-        """Use Playwright to fetch page HTML content."""
-        logger.info(f"Fetching HTML from {url}")
-        try:
-            response = await page.goto(url, wait_until='networkidle', timeout=TimeoutConstants.PLAYWRIGHT_PAGE_LOAD_MS)
-            if not response:
-                logger.warning(f"No response for {url}")
-                return None
-            if response.status != 200:
-                if 300 <= response.status < 400:
-                    logger.warning(f"Redirected from {url} (Status: {response.status}). Stopping.")
-                    return None
-                logger.warning(f"Non-200 response for {url}: Status {response.status}")
-                if response.status >= 500:
-                    return None
+        """Use Playwright to fetch page HTML content, trying multiple Nitter instances if necessary."""
+        original_url = url
+        for base_url in self.base_urls:
+            normalized_url = self.normalize_url(original_url, base_url)
+            logger.info(f"Fetching HTML from {normalized_url} using base {base_url}")
             try:
-                await page.wait_for_selector(PAGE_READY_SELECTOR, state='visible', timeout=TimeoutConstants.PLAYWRIGHT_SELECTOR_MS)
-                logger.info(f"Found '{PAGE_READY_SELECTOR}'")
-            except Exception:
-                logger.warning(f"'{PAGE_READY_SELECTOR}' not found/visible. Proceeding anyway.")
-            await page.wait_for_timeout(TimeoutConstants.PLAYWRIGHT_POST_LOAD_DELAY_MS)
-            html_content = await page.content()
-            if not html_content:
-                logger.warning(f"Empty HTML from {url}")
-                return None
-            if ("Tweet not found" in html_content or
-                    "Instance has been rate limited" in html_content or
-                    "User not found" in html_content):
-                logger.warning(f"Content from {url} indicates error.")
-            logger.info(f"Fetched HTML ({len(html_content)} bytes) from {url}")
-            return html_content
-        except Exception as e:
-            logger.error(f"Error fetching {url}: {e}")
-            return None
+                response = await page.goto(normalized_url, wait_until='load', timeout=TimeoutConstants.PLAYWRIGHT_PAGE_LOAD_MS)
+                if not response:
+                    logger.warning(f"No response for {normalized_url}")
+                    continue
+                if response.status != 200:
+                    if 300 <= response.status < 400:
+                        logger.warning(f"Redirected from {normalized_url} (Status: {response.status}). Stopping.")
+                        continue
+                    logger.warning(f"Non-200 response for {normalized_url}: Status {response.status}")
+                    if response.status >= 500:
+                        logger.warning(f"Server error (Status: {response.status}) for {normalized_url}. Stopping.")
+                        continue
+                try:
+                    await page.wait_for_selector(PAGE_READY_SELECTOR, state='visible', timeout=TimeoutConstants.PLAYWRIGHT_SELECTOR_MS)
+                    logger.info(f"Found '{PAGE_READY_SELECTOR}'")
+                except Exception:
+                    logger.warning(f"'{PAGE_READY_SELECTOR}' not found/visible. Proceeding anyway.")
+                await page.wait_for_timeout(TimeoutConstants.PLAYWRIGHT_POST_LOAD_DELAY_MS)
+                html_content = await page.content()
+                if not html_content:
+                    logger.warning(f"Empty HTML from {normalized_url}")
+                    continue
+                if ("Tweet not found" in html_content or
+                        "Instance has been rate limited" in html_content or
+                        "User not found" in html_content):
+                    logger.warning(f"Content from {normalized_url} indicates error: {html_content[:200]}...")
+                logger.info(f"Fetched HTML ({len(html_content)} bytes) from {normalized_url}")
+                self.base_url = base_url  # Update the primary base URL to the successful one
+                return html_content
+            except Exception as e:
+                logger.error(f"Error fetching {normalized_url}: {e}")
+                # Attempt to capture partial content for diagnostics
+                try:
+                    partial_content = await page.content()
+                    if partial_content:
+                        logger.debug(f"Partial content captured despite error for {normalized_url}: {partial_content[:200]}...")
+                    else:
+                        logger.debug(f"No partial content available for {normalized_url}")
+                except Exception as partial_e:
+                    logger.debug(f"Failed to capture partial content for {normalized_url}: {partial_e}")
+                continue
+        logger.error(f"All Nitter instances failed for {original_url}")
+        return None
 
     def parse_html(self, html: str) -> Optional[ScrapedData]:
         """Parse HTML content and extract main post and replies."""

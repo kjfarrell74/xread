@@ -36,8 +36,8 @@ def scrape(
     else:
         logger.info(f"Using default AI model: {settings.ai_model}")
     
+    data_manager = AsyncDataManager()
     try:
-        data_manager = AsyncDataManager()
         asyncio.run(data_manager.initialize())
         pipeline = ScraperPipeline(data_manager)
         result = asyncio.run(pipeline.run(url))
@@ -50,19 +50,31 @@ def scrape(
             # Placeholder for AI enhancement logic
             pass
         
-        data_manager = AsyncDataManager()
-        if output_format.lower() == FileFormats.JSON.value:
+        if output_format.lower() == FileFormats.JSON_EXTENSION:
             data_manager.save_as_json(result, output_file)
         elif output_format.lower() == FileFormats.MARKDOWN.value:
             data_manager.save_as_markdown(result, output_file)
         else:
             logger.error(f"Unsupported output format: {output_format}")
+            # Close database connection before exiting
+            asyncio.run(data_manager.close())
             sys.exit(1)
             
         logger.info(f"Scraping completed for {url}")
     except Exception as e:
         logger.error(f"Error during scraping: {str(e)}")
+        # Close database connection on error
+        try:
+            asyncio.run(data_manager.close())
+        except Exception as close_error:
+            logger.error(f"Error closing database connection: {str(close_error)}")
         sys.exit(1)
+    finally:
+        # Ensure database connection is closed
+        try:
+            asyncio.run(data_manager.close())
+        except Exception as close_error:
+            logger.error(f"Error closing database connection: {str(close_error)}")
 
 @app.command()
 def list_data(
@@ -71,13 +83,28 @@ def list_data(
     """List all scraped data in the specified format."""
     logger.info(f"Listing scraped data in {format} format...")
     data_manager = AsyncDataManager()
-    asyncio.run(data_manager.initialize())
-    data_list = asyncio.run(data_manager.list_meta())
-    if not data_list:
-        print("No scraped data found.")
-    else:
-        for item in data_list:
-            print(f"ID: {item['status_id']}, Author: {item['author']}, Scrape Date: {item['scrape_date']}")
+    try:
+        asyncio.run(data_manager.initialize())
+        data_list = asyncio.run(data_manager.list_meta())
+        if not data_list:
+            print("No scraped data found.")
+        else:
+            for item in data_list:
+                print(f"ID: {item['status_id']}, Author: {item['author']}, Scrape Date: {item['scrape_date']}")
+    except Exception as e:
+        logger.error(f"Error listing data: {str(e)}")
+        # Close database connection on error
+        try:
+            asyncio.run(data_manager.close())
+        except Exception as close_error:
+            logger.error(f"Error closing database connection: {str(close_error)}")
+        sys.exit(1)
+    finally:
+        # Ensure database connection is closed
+        try:
+            asyncio.run(data_manager.close())
+        except Exception as close_error:
+            logger.error(f"Error closing database connection: {str(close_error)}")
 
 @app.command()
 def add_note(
@@ -87,15 +114,26 @@ def add_note(
     """Add an author note to a specific post."""
     logger.info(f"Adding author note to post {post_id}")
     data_manager = AsyncDataManager()
-    asyncio.run(data_manager.initialize())
-    note = AuthorNote(content=content, timestamp=datetime.now())
     try:
+        asyncio.run(data_manager.initialize())
+        note = AuthorNote(content=content, timestamp=datetime.now())
         data_manager.add_author_note(post_id, note)
         logger.info(f"Author note added to post {post_id}")
         print(f"Note added to post {post_id}: {content}")
     except Exception as e:
         logger.error(f"Error adding author note: {str(e)}")
+        # Close database connection on error
+        try:
+            asyncio.run(data_manager.close())
+        except Exception as close_error:
+            logger.error(f"Error closing database connection: {str(close_error)}")
         sys.exit(1)
+    finally:
+        # Ensure database connection is closed
+        try:
+            asyncio.run(data_manager.close())
+        except Exception as close_error:
+            logger.error(f"Error closing database connection: {str(close_error)}")
 
 @app.command()
 def delete(
@@ -104,14 +142,29 @@ def delete(
     """Delete a post from the database by its ID."""
     logger.info(f"Deleting post {post_id}")
     data_manager = AsyncDataManager()
-    asyncio.run(data_manager.initialize())
-    success = asyncio.run(data_manager.delete(post_id))
-    if success:
-        print(f"Post {post_id} deleted successfully.")
-        logger.info(f"Post {post_id} deleted successfully.")
-    else:
-        print(f"Failed to delete post {post_id}. It may not exist.")
-        logger.warning(f"Failed to delete post {post_id}.")
+    try:
+        asyncio.run(data_manager.initialize())
+        success = asyncio.run(data_manager.delete(post_id))
+        if success:
+            print(f"Post {post_id} deleted successfully.")
+            logger.info(f"Post {post_id} deleted successfully.")
+        else:
+            print(f"Failed to delete post {post_id}. It may not exist.")
+            logger.warning(f"Failed to delete post {post_id}.")
+    except Exception as e:
+        logger.error(f"Error deleting post: {str(e)}")
+        # Close database connection on error
+        try:
+            asyncio.run(data_manager.close())
+        except Exception as close_error:
+            logger.error(f"Error closing database connection: {str(close_error)}")
+        sys.exit(1)
+    finally:
+        # Ensure database connection is closed
+        try:
+            asyncio.run(data_manager.close())
+        except Exception as close_error:
+            logger.error(f"Error closing database connection: {str(close_error)}")
 
 @app.command()
 def interactive():
@@ -122,6 +175,10 @@ def interactive():
     completer = WordCompleter(commands, ignore_case=True)
     session = PromptSession(completer=completer, history=history)
     
+    # Initialize data manager
+    data_manager = AsyncDataManager()
+    asyncio.run(data_manager.initialize())
+    
     while True:
         try:
             command = session.prompt("xread> ").strip()
@@ -129,6 +186,8 @@ def interactive():
                 continue
             elif command.lower() in ["exit", "quit"]:
                 logger.info("Exiting interactive mode.")
+                # Close database connection before exiting
+                asyncio.run(data_manager.close())
                 break
             elif command.lower() == "help":
                 print("Available commands: scrape, list, add-note, delete, help, exit, quit")
@@ -167,9 +226,16 @@ def interactive():
                 print(f"Unknown command: {command}")
         except KeyboardInterrupt:
             logger.info("Interactive mode interrupted by user.")
+            # Close database connection on keyboard interrupt
+            asyncio.run(data_manager.close())
             break
         except Exception as e:
             logger.error(f"Error in interactive mode: {str(e)}")
+            # Attempt to close database connection on error
+            try:
+                asyncio.run(data_manager.close())
+            except Exception as close_error:
+                logger.error(f"Error closing database connection: {str(close_error)}")
 
 if __name__ == "__main__":
     app()

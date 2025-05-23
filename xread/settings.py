@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     nitter_base_url: HttpUrl = Field(
         os.getenv("NITTER_BASE_URL", config.get("Scraper", "nitter_instance", fallback=DEFAULT_NITTER_BASE_URL))
     )
+    nitter_instances: List[HttpUrl] = Field(
+        default_factory=lambda: [
+            url.strip() for url in os.getenv(
+                "NITTER_INSTANCES",
+                config.get("Scraper", "nitter_instances", fallback="https://nitter.net,https://nitter.42l.fr,https://nitter.pussthecat.org,https://nitter.moomoo.me")
+            ).split(",")
+        ]
+    )
     max_image_downloads: int = Field(
         int(os.getenv("MAX_IMAGE_DOWNLOADS_PER_RUN", config.getint("Pipeline", "max_images_per_post", fallback=DEFAULT_MAX_IMAGE_DOWNLOADS))),
         ge=0,

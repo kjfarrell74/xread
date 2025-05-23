@@ -15,4 +15,5 @@ report_temperature = 0.1
 
 [Scraper]
 nitter_instance = https://nitter.net
+nitter_instances = https://nitter.net,https://nitter.42l.fr,https://nitter.pussthecat.org,https://nitter.moomoo.me
 fetch_timeout = 30

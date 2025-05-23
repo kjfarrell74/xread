@@ -56,7 +56,10 @@ async def process_url(url):
         print(f"❌ Error during scraping: {e}")
         raise
     finally:
+        # Ensure browser is closed
         await pipeline.close_browser()
+        # Close database connection
+        await data_manager.close()
         print("🔔 Playing completion notification...")
         SOUND_FUNC()
 
@@ -66,6 +69,11 @@ def main():
     # Play a sound to confirm script started and audio is working
     print("Testing sound notification...")
     SOUND_FUNC()
+    
+    # Initialize data manager
+    data_manager = AsyncDataManager()
+    asyncio.run(data_manager.initialize())
+    
     try:
         while True:
             try:
@@ -74,6 +82,8 @@ def main():
                 print("Error: No clipboard copy/paste mechanism found.")
                 print("On Linux, install 'xclip' or 'xsel' (e.g., sudo apt-get install xclip).")
                 print("See https://pyperclip.readthedocs.io/en/latest/index.html#not-implemented-error for details.")
+                # Close database connection before exiting
+                asyncio.run(data_manager.close())
                 sys.exit(1)
             if clipboard_content != last_clipboard:
                 match = TWITTER_URL_RE.search(clipboard_content)
@@ -85,7 +95,18 @@ def main():
                 last_clipboard = clipboard_content
             time.sleep(1)  # Check every second
     except KeyboardInterrupt:
-        print("Exiting.")
+        print("Exiting clipboard watcher...")
+        # Close database connection on keyboard interrupt
+        asyncio.run(data_manager.close())
+        print("Resources cleaned up. Exiting.")
+    except Exception as e:
+        print(f"Error in clipboard watcher: {e}")
+        # Attempt to close database connection on error
+        try:
+            asyncio.run(data_manager.close())
+        except Exception as close_error:
+            print(f"Error closing database connection: {close_error}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

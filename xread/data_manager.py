@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Set, Any
 import aiofiles
 from datetime import datetime, timezone
+from xread.core.async_file import write_json_async
 
 from xread.settings import settings, logger
 from xread.models import ScrapedData, Post, Image, AuthorNote, UserProfile # Import AuthorNote and UserProfile
@@ -19,9 +20,13 @@ class AsyncDataManager:
         self.conn: Optional[aiosqlite.Connection] = None
         self.image_cache: Dict[str, str] = {}  # Keep for in-memory, but DB is source
         self.seen: Set[str] = set()
+        self._closed = False
 
     async def initialize(self) -> None:
         """Initialize the data manager by connecting to DB and creating tables."""
+        if self._closed:
+            logger.warning("Attempting to initialize a closed data manager. Reopening connection.")
+            self._closed = False
         self.conn = await self._connect_db()
         await self._initialize_db()
         await self._load_seen_ids()
@@ -351,8 +356,7 @@ class AsyncDataManager:
             logger.info(f"save: json_data = {json.dumps(json_data, indent=2, ensure_ascii=False)}")
             json_file_path = self.data_dir / 'scraped_data' / f'post_{sid}.json'
             json_file_path.parent.mkdir(parents=True, exist_ok=True)
-            async with aiofiles.open(json_file_path, mode='w', encoding='utf-8') as f:
-                await f.write(json.dumps(json_data, indent=2, ensure_ascii=False))
+            await write_json_async(json_file_path, json_data)
             logger.info(f"Saved post {sid} to JSON file at {json_file_path}.")
             
             return sid
@@ -508,3 +512,20 @@ class AsyncDataManager:
             return None
         finally:
             await cursor.close()
+            
+    async def close(self) -> None:
+        """Close the database connection and clean up resources."""
+        if self._closed:
+            logger.debug("Data manager already closed.")
+            return
+            
+        if self.conn:
+            try:
+                logger.info("Closing database connection...")
+                await self.conn.close()
+                logger.info("Database connection closed.")
+            except Exception as e:
+                logger.error(f"Error closing database connection: {e}")
+            finally:
+                self.conn = None
+                self._closed = True

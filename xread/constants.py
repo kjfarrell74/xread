@@ -14,7 +14,7 @@ PAGE_READY_SELECTOR = "div.container"
 
 class TimeoutConstants:
     """Constants for various timeout durations used in the application."""
-    PLAYWRIGHT_PAGE_LOAD_MS = 35000
+    PLAYWRIGHT_PAGE_LOAD_MS = 60000
     PLAYWRIGHT_SELECTOR_MS = 7000
     PLAYWRIGHT_POST_LOAD_DELAY_MS = 3000
     IMAGE_DOWNLOAD_SECONDS = 10
