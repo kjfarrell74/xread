@@ -62,6 +62,7 @@ This document outlines refactoring opportunities in the xread project, prioritiz
 ## Code Organization
 
 - [ ] **Reorganize imports**: Standardize import order across all files:
+  - [x] xread/ai_models.py
   - [ ] Standard library imports first
   - [ ] Third-party library imports second
   - [ ] Local application imports last

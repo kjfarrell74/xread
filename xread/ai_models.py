@@ -9,9 +9,10 @@ import os
 import asyncio
 import base64
 import mimetypes
-import aiohttp
 from typing import Optional, List, Dict, Any
 from abc import ABC, abstractmethod
+
+import aiohttp
 
 from xread.settings import settings, logger
 from xread.constants import PERPLEXITY_REPORT_PROMPT, GEMINI_REPORT_PROMPT
