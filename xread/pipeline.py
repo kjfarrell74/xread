@@ -89,16 +89,36 @@ class ScraperPipeline:
         return None
 
     async def _fetch_and_parse(self, normalized_url: str, sid: str) -> tuple[Optional[str], Optional[ScrapedData]]:
-        """Fetch HTML content and parse it into structured data."""
+        """Fetch HTML content and parse it into structured data, with retry and specific error handling."""
+        from xread.core.utils import with_retry
+        import aiohttp
+
         page = await self.browser_manager.new_page()
         try:
-            html_content = await self.scraper.fetch_html(page, normalized_url)
+            # Retry fetch_html for transient network errors
+            async def fetch_html_with_retry():
+                return await self.scraper.fetch_html(page, normalized_url)
+
+            try:
+                html_content = await with_retry(fetch_html_with_retry, retries=3, delay=2, exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+            except (aiohttp.ClientError, asyncio.TimeoutError) as net_exc:
+                logger.error(f"Network error during fetch for {normalized_url}: {net_exc}")
+                typer.echo(f"Network error: {net_exc}", err=True)
+                return None, None
+
             if not html_content:
                 logger.error(f"Fetch failed for {normalized_url}")
                 typer.echo(f"Error: {ErrorMessages.FETCH_FAILED}", err=True)
                 return None, None
 
-            scraped_data = self.scraper.parse_html(html_content)
+            try:
+                scraped_data = self.scraper.parse_html(html_content)
+            except Exception as parse_exc:
+                logger.error(f"Parsing error for {normalized_url}: {parse_exc}")
+                typer.echo(f"Parsing error: {parse_exc}", err=True)
+                await self._save_failed_html(sid, html_content)
+                return html_content, None
+
             if not scraped_data:
                 logger.error(f"Parse failed for {normalized_url}")
                 typer.echo(f"Error: {ErrorMessages.PARSE_FAILED}", err=True)

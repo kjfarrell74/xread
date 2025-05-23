@@ -49,10 +49,10 @@ This document outlines refactoring opportunities in the xread project, prioritiz
 
 ## Error Handling
 
-- [ ] **Improve error handling in pipeline.py**: Add more specific exception handling:
-  - [ ] Handle network errors separately from parsing errors
-  - [ ] Add retry logic for transient errors
-  - [ ] Improve error messages for better debugging
+- [x] **Improve error handling in pipeline.py**: Add more specific exception handling:
+  - [x] Handle network errors separately from parsing errors
+  - [x] Add retry logic for transient errors
+  - [x] Improve error messages for better debugging
 
 - [ ] **Enhance error handling in AI model classes**: Improve error handling in `xread/ai_models.py`:
   - [ ] Add more specific exception types
