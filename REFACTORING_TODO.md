@@ -63,6 +63,7 @@ This document outlines refactoring opportunities in the xread project, prioritiz
 
 - [ ] **Reorganize imports**: Standardize import order across all files:
   - [x] xread/ai_models.py
+  - [x] xread/pipeline.py
   - [ ] Standard library imports first
   - [ ] Third-party library imports second
   - [ ] Local application imports last

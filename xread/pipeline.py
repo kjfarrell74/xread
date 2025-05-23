@@ -5,15 +5,15 @@ import os
 import asyncio
 import base64
 import mimetypes
-import aiohttp
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 from pathlib import Path
 
+import aiohttp
 import typer
 import aiofiles
-from xread.core.async_file import write_json_async
 
+from xread.core.async_file import write_json_async
 from xread.settings import settings, logger
 from xread.constants import ErrorMessages, FileFormats, PERPLEXITY_REPORT_PROMPT
 from xread.models import ScrapedData, Post
