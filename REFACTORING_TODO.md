@@ -24,23 +24,23 @@ This document outlines refactoring opportunities in the xread project, prioritiz
   - [x] Extract error handling logic
   - [x] Extract content validation logic
 
-- [ ] **Extract methods in PerplexityModel class**: Break down the large `generate_report` method in `xread/ai_models.py`:
-  - [ ] Extract multimodal API call logic
-  - [ ] Extract text-only API call logic
-  - [ ] Extract error handling logic
+- [x] **Extract methods in PerplexityModel class**: Break down the large `generate_report` method in `xread/ai_models.py`:
+  - [x] Extract multimodal API call logic
+  - [x] Extract text-only API call logic
+  - [x] Extract error handling logic
 
-- [ ] **Extract methods in AsyncDataManager class**: Refactor methods in `xread/data_manager.py`:
-  - [ ] Extract database initialization logic from `_initialize_db`
-  - [ ] Extract JSON serialization logic from `save`
+- [x] **Extract methods in AsyncDataManager class**: Refactor methods in `xread/data_manager.py`:
+  - [x] Extract database initialization logic from `_initialize_db`
+  - [x] Extract JSON serialization logic from `save`
 
 ## Arrow Functions (per .clinerules)
 
-- [ ] **Convert to arrow functions in frontend code**: Update functions in `frontend/src/components/Dashboard.tsx` to use arrow functions
+- [x] **Convert to arrow functions in frontend code**: Update functions in `frontend/src/components/Dashboard.tsx` to use arrow functions
 
 ## Plugin System Improvements
 
-- [ ] **Complete MastodonPlugin implementation**: The `xread/plugins/plugin_mastodon.py` has placeholder implementation
-  - [ ] Implement `scrape` method with proper Mastodon API integration
+- [x] **Complete MastodonPlugin implementation**: The `xread/plugins/plugin_mastodon.py` has placeholder implementation
+  - [x] Implement `scrape` method with proper Mastodon API integration
 
 - [ ] **Enhance PluginManager**: Update `xread/plugins/manager.py` to:
   - [ ] Add proper registration for AIModelPlugin classes
