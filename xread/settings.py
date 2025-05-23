@@ -33,16 +33,16 @@ else:
 
 class Settings(BaseSettings):
     """Application settings loaded from config.ini, environment variables, or defaults."""
-    data_dir: Path = Field(Path(os.getenv("DATA_DIR", config.get("General", "data_dir", fallback=DEFAULT_DATA_DIR))), pre=True)
+    data_dir: Path = Field(default=Path(os.getenv("DATA_DIR", config.get("General", "data_dir", fallback=DEFAULT_DATA_DIR))), pre=True) # Corrected
     nitter_base_url: HttpUrl = Field(
-        os.getenv("NITTER_BASE_URL", config.get("Scraper", "nitter_instance", fallback=DEFAULT_NITTER_BASE_URL))
+        default=os.getenv("NITTER_BASE_URL", config.get("Scraper", "nitter_instance", fallback=DEFAULT_NITTER_BASE_URL)) # Corrected
     )
     max_image_downloads: int = Field(
-        int(os.getenv("MAX_IMAGE_DOWNLOADS_PER_RUN", config.getint("Pipeline", "max_images_per_post", fallback=DEFAULT_MAX_IMAGE_DOWNLOADS))),
+        default=int(os.getenv("MAX_IMAGE_DOWNLOADS_PER_RUN", config.getint("Pipeline", "max_images_per_post", fallback=DEFAULT_MAX_IMAGE_DOWNLOADS))), # Corrected
         ge=0,
     )
-    status_id_regex: str = r"status/(\d+)"
-    full_url_regex: str = (
+    status_id_regex: str = r"status/(\d+)" # Correct - uses direct default
+    full_url_regex: str = ( # Correct - uses direct default
         r"(?:https?://)?(?:www\.)?(?:twitter\.com|x\.com|nitter\.(?:net|[a-z0-9-]+))/"
         r"([^/]+)/status/(\d+)"
     )
@@ -53,19 +53,19 @@ class Settings(BaseSettings):
             ".tweet-body",
             ".timeline-item",
         ]
-    )
-    retry_attempts: int = Field(int(os.getenv("RETRY_ATTEMPTS", config.getint("Scraper", "retry_attempts", fallback=DEFAULT_RETRY_ATTEMPTS))), ge=1)
-    retry_delay: int = Field(int(os.getenv("RETRY_DELAY", config.getint("Scraper", "retry_delay", fallback=DEFAULT_RETRY_DELAY))), ge=0)
+    ) # Correct - uses default_factory
+    retry_attempts: int = Field(default=int(os.getenv("RETRY_ATTEMPTS", config.getint("Scraper", "retry_attempts", fallback=DEFAULT_RETRY_ATTEMPTS))), ge=1) # Corrected
+    retry_delay: int = Field(default=int(os.getenv("RETRY_DELAY", config.getint("Scraper", "retry_delay", fallback=DEFAULT_RETRY_DELAY))), ge=0) # Corrected
     image_ignore_keywords: List[str] = Field(
-        ['profile_images', 'avatar', 'user_media']
+        default=['profile_images', 'avatar', 'user_media'] # Correct - uses direct default
     )
-    save_failed_html: bool = Field(bool(os.getenv("SAVE_FAILED_HTML", config.getboolean("Pipeline", "save_failed_html", fallback=True))))
-    ai_model: str = Field(os.getenv("AI_MODEL", config.get("General", "ai_model", fallback="perplexity")))
-    report_max_tokens: int = Field(int(os.getenv("REPORT_MAX_TOKENS", config.getint("Pipeline", "report_max_tokens", fallback=2000))), ge=100)
-    report_temperature: float = Field(float(os.getenv("REPORT_TEMPERATURE", config.getfloat("Pipeline", "report_temperature", fallback=0.1))), ge=0.0, le=1.0)
-    fetch_timeout: int = Field(int(os.getenv("FETCH_TIMEOUT", config.getint("Scraper", "fetch_timeout", fallback=30))), ge=5)
-    perplexity_api_key: Optional[str] = Field(os.getenv("XREAD_PERPLEXITY_API_KEY", config.get("API_KEYS", "perplexity_api_key", fallback=None)), default=None)
-    gemini_api_key: Optional[str] = Field(os.getenv("XREAD_GEMINI_API_KEY", config.get("API_KEYS", "gemini_api_key", fallback=None)), default=None)
+    save_failed_html: bool = Field(default=bool(os.getenv("SAVE_FAILED_HTML", config.getboolean("Pipeline", "save_failed_html", fallback=True)))) # Corrected
+    ai_model: str = Field(default=os.getenv("AI_MODEL", config.get("General", "ai_model", fallback="perplexity"))) # Corrected
+    report_max_tokens: int = Field(default=int(os.getenv("REPORT_MAX_TOKENS", config.getint("Pipeline", "report_max_tokens", fallback=2000))), ge=100) # Corrected
+    report_temperature: float = Field(default=float(os.getenv("REPORT_TEMPERATURE", config.getfloat("Pipeline", "report_temperature", fallback=0.1))), ge=0.0, le=1.0) # Corrected
+    fetch_timeout: int = Field(default=int(os.getenv("FETCH_TIMEOUT", config.getint("Scraper", "fetch_timeout", fallback=30))), ge=5) # Corrected
+    perplexity_api_key: Optional[str] = Field(default=os.getenv("XREAD_PERPLEXITY_API_KEY", config.get("API_KEYS", "perplexity_api_key", fallback=None))) # Corrected
+    gemini_api_key: Optional[str] = Field(default=os.getenv("XREAD_GEMINI_API_KEY", config.get("API_KEYS", "gemini_api_key", fallback=None))) # Corrected
 
     class Config:
         env_file = ".env"
