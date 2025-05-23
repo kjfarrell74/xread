@@ -1,53 +1,62 @@
 """Data management functionality for saving and loading scraped data in xread."""
 
 import json
-import aiosqlite  # Using async SQLite for database operations
+import os
 from pathlib import Path
 from typing import Optional, Dict, List, Set, Any
-import aiofiles
 from datetime import datetime, timezone
+
+import aiosqlite  # Using async SQLite for database operations
+import aiofiles
+
 from xread.core.async_file import write_json_async
-
 from xread.settings import settings, logger
-from xread.models import ScrapedData, Post, Image, AuthorNote, UserProfile # Import AuthorNote and UserProfile
+from xread.models import ScrapedData, Post, Image, AuthorNote, UserProfile
+from xread.security_patches import SecurityValidator, SecureDataManager as SecureBaseDataManager
 
-class AsyncDataManager:
-    """Handles saving and loading scraped data to/from the database asynchronously."""
+class AsyncDataManager(SecureBaseDataManager):
+    """Handles saving and loading scraped data to/from the database asynchronously with security features."""
     def __init__(self):
+        super().__init__(data_dir=settings.data_dir)
         self.data_dir = settings.data_dir
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = self.data_dir / 'xread_data.db'  # Define DB path
+        self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o750)  # Secure permissions
+        self.db_path = self.data_dir / 'xread_data.db'
         self.conn: Optional[aiosqlite.Connection] = None
-        self.image_cache: Dict[str, str] = {}  # Keep for in-memory, but DB is source
+        self.image_cache: Dict[str, str] = {}
         self.seen: Set[str] = set()
         self._closed = False
 
     async def initialize(self) -> None:
-        """Initialize the data manager by connecting to DB and creating tables."""
+        """Initialize the data manager by connecting to DB and creating tables with secure settings."""
         if self._closed:
             logger.warning("Attempting to initialize a closed data manager. Reopening connection.")
             self._closed = False
         self.conn = await self._connect_db()
         await self._initialize_db()
         await self._load_seen_ids()
-        await self._load_cache()  # Load cache from DB into memory
+        await self._load_cache()
+        self._ensure_secure_db()
 
     async def _connect_db(self) -> aiosqlite.Connection:
-        """Establish async SQLite connection."""
+        """Establish async SQLite connection with security settings."""
         try:
             conn = await aiosqlite.connect(self.db_path)
-            conn.row_factory = aiosqlite.Row  # Access columns by name
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys = ON")
+            await conn.execute("PRAGMA journal_mode = WAL")
+            await conn.execute("PRAGMA synchronous = NORMAL")
             logger.info(f"Connected to SQLite database: {self.db_path}")
             return conn
         except aiosqlite.Error as e:
             logger.error(f"Error connecting to SQLite database: {e}")
-            raise  # Propagate error
+            raise
 
     async def _initialize_db(self) -> None:
-        """Create database tables if they don't exist and perform migrations."""
+        """Create database tables if they don't exist and perform migrations with secure permissions."""
         if not self.conn:
             raise ConnectionError("Database not connected.")
         await self._create_tables_and_migrate()
+        os.chmod(self.db_path, 0o640)  # rw-r-----
 
     async def _create_tables_and_migrate(self) -> None:
         """Extracted: Create all tables and perform schema migrations."""
@@ -246,7 +255,7 @@ class AsyncDataManager:
         author_profile: Optional['UserProfile'] = None,
         author_note: Optional['AuthorNote'] = None
     ) -> Optional[str]:
-        """Save scraped data to the database and as JSON files."""
+        """Save scraped data to the database and as JSON files with security validations."""
         if not self.conn:
             logger.error("Database not connected. Cannot save.")
             return None
@@ -265,6 +274,13 @@ class AsyncDataManager:
             logger.info(f"Post {sid} already saved. Skipping.")
             return None
 
+        # Validate status ID
+        if not SecurityValidator.validate_status_id(sid):
+            logger.error(f"Invalid status ID: {sid}")
+            return None
+
+        # Sanitize status ID for filename
+        clean_sid = SecurityValidator.sanitize_filename(sid)
         cursor = await self.conn.cursor()
         try:
             scrape_date = datetime.now(timezone.utc).isoformat()
@@ -273,14 +289,11 @@ class AsyncDataManager:
             # Defensive serialization of topic_tags
             topic_tags_value = data.main_post.topic_tags
             try:
-                # Always serialize to JSON string, even if already a string
                 if isinstance(topic_tags_value, str):
-                    # Try to load and re-dump to ensure valid JSON string
                     try:
                         loaded = json.loads(topic_tags_value)
                         topic_tags_serialized = json.dumps(loaded)
                     except Exception:
-                        # If not valid JSON, wrap in a list and dump
                         topic_tags_serialized = json.dumps([topic_tags_value])
                 else:
                     topic_tags_serialized = json.dumps(topic_tags_value if topic_tags_value is not None else [])
@@ -288,7 +301,6 @@ class AsyncDataManager:
                 logger.error(f"Error serializing topic_tags for post {sid}: {e}. Defaulting to empty list.")
                 topic_tags_serialized = json.dumps([])
 
-            # Log topic_tags type and value for debugging
             logger.debug(f"Saving post {sid} with topic_tags type: {type(topic_tags_value)} and value: {topic_tags_value}")
 
             # Insert into posts table with new columns
@@ -301,7 +313,7 @@ class AsyncDataManager:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    sid,
+                    clean_sid,
                     data.main_post.user,
                     data.main_post.username,
                     data.main_post.text,
@@ -322,14 +334,14 @@ class AsyncDataManager:
 
             for reply in data.replies:
                 reply_images_json = json.dumps([img.__dict__ for img in reply.images])
-                # Check if a reply with this permalink already exists
                 await cursor.execute("SELECT reply_db_id FROM replies WHERE permalink = ?", (reply.permalink,))
                 if await cursor.fetchone():
                     logger.info(f"Reply with permalink {reply.permalink} already exists. Skipping insertion.")
                     continue
+                reply_sid = SecurityValidator.sanitize_filename(reply.status_id) if reply.status_id else ""
                 await cursor.execute(
                     "INSERT INTO replies (post_status_id, status_id, user, username, text, date, permalink, images_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (sid, reply.status_id, reply.user, reply.username, reply.text, reply.date,
+                    (clean_sid, reply_sid, reply.user, reply.username, reply.text, reply.date,
                      reply.permalink, reply_images_json)
                 )
 
@@ -337,14 +349,15 @@ class AsyncDataManager:
             self.seen.add(sid)
             logger.info(f"Saved post {sid} to database.")
             
-            # Also save to JSON file
+            # Also save to JSON file with secure permissions
             json_data = self._serialize_to_json(
                 data, original_url, scrape_date, ai_report, author_profile, author_note
             )
             logger.info(f"save: json_data = {json.dumps(json_data, indent=2, ensure_ascii=False)}")
-            json_file_path = self.data_dir / 'scraped_data' / f'post_{sid}.json'
-            json_file_path.parent.mkdir(parents=True, exist_ok=True)
+            json_file_path = self.data_dir / 'scraped_data' / f'post_{clean_sid}.json'
+            json_file_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
             await write_json_async(json_file_path, json_data)
+            os.chmod(json_file_path, 0o640)  # rw-r-----
             logger.info(f"Saved post {sid} to JSON file at {json_file_path}.")
             
             return sid
@@ -358,7 +371,7 @@ class AsyncDataManager:
             return None
         except IOError as e:
             logger.error(f"Error saving post {sid} to JSON file: {e} - Type: {type(e)}, Args: {e.args}")
-            return sid  # Return sid even if JSON save fails, since DB save succeeded
+            return sid
 
     def _serialize_to_json(
         self,

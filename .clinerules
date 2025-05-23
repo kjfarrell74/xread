@@ -1,0 +1,5 @@
+refactoring:
+  chunk_size: 5
+  extract_methods: true
+code_style:
+  prefer_arrow_functions: true
