@@ -65,7 +65,7 @@ def list_data(
     logger.info(f"Listing scraped data in {format} format...")
     data_manager = AsyncDataManager()
     asyncio.run(data_manager.initialize())
-    data_list = data_manager.list_meta()
+    data_list = asyncio.run(data_manager.list_meta())
     if not data_list:
         print("No scraped data found.")
     else:
