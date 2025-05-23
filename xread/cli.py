@@ -45,7 +45,8 @@ def scrape(
         if enhance:
             logger.info("Enhancing scraped data with AI...")
             # Ensure AI model is a string for enhancement
-            ai_model_str = str(settings.ai_model)
+            ai_model_value = getattr(settings.ai_model, 'value', settings.ai_model)
+            ai_model_str = str(ai_model_value)
             logger.info(f"Using AI model for enhancement: {ai_model_str}")
             # Placeholder for AI enhancement logic
             pass
