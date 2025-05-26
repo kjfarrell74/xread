@@ -77,7 +77,11 @@ def main():
     try:
         while True:
             try:
-                clipboard_content = pyperclip.paste().strip()
+                clipboard_content = pyperclip.paste()
+                if clipboard_content is None:
+                    clipboard_content = ""
+                else:
+                    clipboard_content = clipboard_content.strip()
             except PyperclipException:
                 print("Error: No clipboard copy/paste mechanism found.")
                 print("On Linux, install 'xclip' or 'xsel' (e.g., sudo apt-get install xclip).")
@@ -85,6 +89,9 @@ def main():
                 # Close database connection before exiting
                 asyncio.run(data_manager.close())
                 sys.exit(1)
+            except Exception as e:
+                print(f"Error pasting from clipboard: {e}")
+                clipboard_content = ""
             if clipboard_content != last_clipboard:
                 match = TWITTER_URL_RE.search(clipboard_content)
                 if match:

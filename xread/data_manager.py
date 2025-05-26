@@ -91,7 +91,8 @@ class AsyncDataManager(SecureBaseDataManager):
                 'topic_tags': 'TEXT', # Stored as JSON string
                 'factual_context': 'TEXT',
                 'source': 'TEXT',
-                'ai_report': 'TEXT'
+                'ai_report': 'TEXT',
+                'author_note': 'TEXT'
             }
 
             for col_name, col_type in new_columns.items():
@@ -540,6 +541,33 @@ class AsyncDataManager(SecureBaseDataManager):
         except aiosqlite.Error as e:
             logger.error(f"Error fetching author note for {username}: {e}")
             return None
+        finally:
+            await cursor.close()
+
+    async def add_author_note(self, post_id: str, note: 'AuthorNote') -> bool:
+        """Add an author note to a specific post by updating the posts table."""
+        if not self.conn:
+            logger.error("Database not connected. Cannot add author note.")
+            return False
+        
+        cursor = await self.conn.cursor()
+        try:
+            # Update the author_note field for the specific post
+            await cursor.execute(
+                "UPDATE posts SET author_note = ? WHERE status_id = ?",
+                (note.note_content, post_id)
+            )
+            if cursor.rowcount > 0:
+                await self.conn.commit()
+                logger.info(f"Added author note to post {post_id}: {note.note_content}")
+                return True
+            else:
+                logger.warning(f"Post {post_id} not found. Cannot add author note.")
+                return False
+        except aiosqlite.Error as e:
+            logger.error(f"Error adding author note to post {post_id}: {e}")
+            await self.conn.rollback()
+            return False
         finally:
             await cursor.close()
             

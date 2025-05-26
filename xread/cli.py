@@ -109,18 +109,21 @@ def list_data(
 
 @app.command()
 def add_note(
-    post_id: str = typer.Argument(..., help="ID of the post to add a note to"),
+    username: str = typer.Argument(..., help="Username/author to add a note for"),
     content: str = typer.Argument(..., help="Content of the author note")
 ):
-    """Add an author note to a specific post."""
-    logger.info(f"Adding author note to post {post_id}")
+    """Add an author note for a specific username that will be included in future scrapes."""
+    logger.info(f"Adding author note for username {username}")
     data_manager = AsyncDataManager()
     try:
         asyncio.run(data_manager.initialize())
-        note = AuthorNote(content=content, timestamp=datetime.now())
-        data_manager.add_author_note(post_id, note)
-        logger.info(f"Author note added to post {post_id}")
-        print(f"Note added to post {post_id}: {content}")
+        note = AuthorNote(username=username, note_content=content)
+        success = asyncio.run(data_manager.save_author_note(note))
+        if not success:
+            print(f"Failed to add note for username {username}.")
+            return
+        logger.info(f"Author note added for username {username}")
+        print(f"Note added for @{username}: {content}")
     except Exception as e:
         logger.error(f"Error adding author note: {str(e)}")
         # Close database connection on error

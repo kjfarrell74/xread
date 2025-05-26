@@ -6,7 +6,7 @@ import configparser
 from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field, ValidationError, HttpUrl
-from typing import List
+from typing import List, Optional
 import logging
 from dotenv import load_dotenv
 import typer
@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     report_max_tokens: int = Field(int(os.getenv("REPORT_MAX_TOKENS", config.getint("Pipeline", "report_max_tokens", fallback=2000))), ge=100)
     report_temperature: float = Field(float(os.getenv("REPORT_TEMPERATURE", config.getfloat("Pipeline", "report_temperature", fallback=0.1))), ge=0.0, le=1.0)
     fetch_timeout: int = Field(int(os.getenv("FETCH_TIMEOUT", config.getint("Scraper", "fetch_timeout", fallback=30))), ge=5)
+    
+    # API Keys
+    perplexity_api_key: Optional[str] = Field(os.getenv("PERPLEXITY_API_KEY", config.get("API Keys", "perplexity_api_key", fallback=None)))
+    gemini_api_key: Optional[str] = Field(os.getenv("GEMINI_API_KEY", config.get("API Keys", "gemini_api_key", fallback=None)))
 
     class Config:
         env_file = ".env"

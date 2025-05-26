@@ -21,6 +21,21 @@ echo "Installing dependencies..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
+# Check and install Playwright browsers if needed
+echo "Checking Playwright browser installation..."
+if ! python -c "from playwright.sync_api import sync_playwright; sync_playwright().start().firefox.launch(headless=True).close()" 2>/dev/null; then
+  echo "Playwright browsers not installed or outdated. Installing..."
+  python -m playwright install firefox
+  # Install system dependencies if on Linux
+  if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    echo "Installing system dependencies for Playwright..."
+    python -m playwright install-deps firefox
+  fi
+  echo "Playwright Firefox browser installed successfully."
+else
+  echo "Playwright Firefox browser is already installed and working."
+fi
+
 # Load environment variables safely
 if [ -f ".env" ]; then
   echo "Loading environment variables from .env"
