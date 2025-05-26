@@ -8,9 +8,11 @@ to support generating reports and analyses from scraped data.
 import os
 import asyncio
 import base64
+import hashlib
 import mimetypes
 from typing import Optional, List, Dict, Any
 from abc import ABC, abstractmethod
+from datetime import timedelta
 
 import aiohttp
 
@@ -45,7 +47,7 @@ class PerplexityModel(BaseAIModel):
         Args:
             api_key (Optional[str]): The API key for Perplexity AI. If not provided, it will be fetched from environment variables.
         """
-        self.api_key = api_key or os.getenv("PERPLEXITY_API_KEY")
+        self.api_key = api_key or os.getenv("PERPLEXITY_API_KEY") or settings.perplexity_api_key
         if not self.api_key:
             logger.error("Perplexity API key not found in environment variables or initialization.")
             raise ValueError("Perplexity API key is required.")
@@ -95,7 +97,7 @@ class PerplexityModel(BaseAIModel):
                     return await self._generate_multimodal_report(
                         prompt_text, image_content, user_message, payload, headers, sid
                     )
-                multimodal_result = await with_retry(multimodal_call, retries=2, delay=2, exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+                multimodal_result = await with_retry(retries=2, delay=2)(multimodal_call)()
                 if multimodal_result is not None:
                     return multimodal_result
             except (aiohttp.ClientError, asyncio.TimeoutError) as net_exc:
@@ -111,7 +113,7 @@ class PerplexityModel(BaseAIModel):
         try:
             async def text_only_call():
                 return await self._generate_text_only_report(headers, payload, sid)
-            return await with_retry(text_only_call, retries=2, delay=2, exceptions=(aiohttp.ClientError, asyncio.TimeoutError))
+            return await with_retry(retries=2, delay=2)(text_only_call)()
         except (aiohttp.ClientError, asyncio.TimeoutError) as net_exc:
             logger.error(f"Network error in text-only Perplexity API call for post {sid}: {net_exc}")
             return f"Error: Network error in text-only Perplexity API call: {net_exc}"
@@ -543,7 +545,7 @@ class GeminiModel(BaseAIModel):
         Args:
             api_key (Optional[str]): The API key for Gemini AI. If not provided, it will be fetched from environment variables.
         """
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or settings.gemini_api_key
         if not self.api_key:
             logger.error("Gemini API key not found in environment variables or initialization.")
             raise ValueError("Gemini API key is required.")
