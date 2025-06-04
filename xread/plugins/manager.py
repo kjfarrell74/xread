@@ -22,13 +22,13 @@ class PluginManager:
                         module = importlib.import_module(f'xread.plugins.{name}')
                     else:
                         # External: import by path
-                        import importlib.util
+                        import importlib.util as importlib_util
                         import os
                         module_path = os.path.join(plugin_dir, f"{name}.py")
-                        spec = importlib.util.spec_from_file_location(name, module_path)
+                        spec = importlib_util.spec_from_file_location(name, module_path)
                         if not spec or not spec.loader:
                             continue
-                        module = importlib.util.module_from_spec(spec)
+                        module = importlib_util.module_from_spec(spec)
                         spec.loader.exec_module(module)
                     # Auto-register plugins based on base class
                     for attr_name in dir(module):

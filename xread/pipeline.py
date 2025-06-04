@@ -19,7 +19,13 @@ from xread.constants import ErrorMessages, FileFormats, PERPLEXITY_REPORT_PROMPT
 from xread.models import ScrapedData, Post
 from xread.scraper import NitterScraper
 from xread.data_manager import AsyncDataManager
-from xread.ai_models import PerplexityModel, GeminiModel
+from xread.ai_models import (
+    PerplexityModel,
+    GeminiModel,
+    OpenAIModel,
+    AnthropicModel,
+    DeepSeekModel,
+)
 from xread.browser import BrowserManager
 from xread.json_upgrader import upgrade_perplexity_json
 from xread.core.utils import play_ding
@@ -36,6 +42,15 @@ class ScraperPipeline:
         if selected_model == "gemini":
             self.ai_model = GeminiModel()
             logger.info("Using Gemini AI model for report generation.")
+        elif selected_model == "openai":
+            self.ai_model = OpenAIModel()
+            logger.info("Using OpenAI GPT model for report generation.")
+        elif selected_model == "anthropic":
+            self.ai_model = AnthropicModel()
+            logger.info("Using Anthropic Claude model for report generation.")
+        elif selected_model == "deepseek":
+            self.ai_model = DeepSeekModel()
+            logger.info("Using DeepSeek model for report generation.")
         else:
             self.ai_model = PerplexityModel()
             logger.info("Using Perplexity AI model for report generation.")
