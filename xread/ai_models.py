@@ -811,3 +811,114 @@ class GeminiModel(BaseAIModel):
                 logger.warning(f"Error processing image {img.url}: {e}")
 
         return image_data_list
+
+
+class OpenAIModel(BaseAIModel):
+    """Implementation of OpenAI GPT model for report generation."""
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY") or settings.openai_api_key
+        if not self.api_key:
+            logger.error("OpenAI API key not found in environment variables or initialization.")
+            raise ValueError("OpenAI API key is required.")
+        import openai
+        openai.api_key = self.api_key
+
+    async def generate_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
+        import openai
+        full_text = scraped_data.get_full_text()
+        if not full_text.strip():
+            logger.warning(f"Post {sid} has no text content for report generation.")
+            return "Info: No text content provided for analysis."
+
+        prompt_text = PERPLEXITY_REPORT_PROMPT.format(scraped_text=full_text)
+        try:
+            response = await openai.ChatCompletion.acreate(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are an expert analyst."},
+                    {"role": "user", "content": prompt_text},
+                ],
+                max_tokens=settings.report_max_tokens,
+                temperature=settings.report_temperature,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"OpenAI API error for post {sid}: {e}")
+            return f"Error: Failed to generate OpenAI report. Exception: {e}"
+
+
+class AnthropicModel(BaseAIModel):
+    """Implementation of Anthropic Claude model for report generation."""
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY") or settings.anthropic_api_key
+        if not self.api_key:
+            logger.error("Anthropic API key not found in environment variables or initialization.")
+            raise ValueError("Anthropic API key is required.")
+        import anthropic
+        self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
+
+    async def generate_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
+        import anthropic
+        full_text = scraped_data.get_full_text()
+        if not full_text.strip():
+            logger.warning(f"Post {sid} has no text content for report generation.")
+            return "Info: No text content provided for analysis."
+
+        prompt_text = PERPLEXITY_REPORT_PROMPT.format(scraped_text=full_text)
+        try:
+            response = await self.client.messages.create(
+                model="claude-3-sonnet-20240229",
+                max_tokens=settings.report_max_tokens,
+                temperature=settings.report_temperature,
+                messages=[{"role": "user", "content": prompt_text}],
+            )
+            return response.content[0].text
+        except Exception as e:
+            logger.error(f"Anthropic API error for post {sid}: {e}")
+            return f"Error: Failed to generate Anthropic report. Exception: {e}"
+
+
+class DeepSeekModel(BaseAIModel):
+    """Implementation of DeepSeek model for report generation."""
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY") or settings.deepseek_api_key
+        if not self.api_key:
+            logger.error("DeepSeek API key not found in environment variables or initialization.")
+            raise ValueError("DeepSeek API key is required.")
+
+    async def generate_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
+        full_text = scraped_data.get_full_text()
+        if not full_text.strip():
+            logger.warning(f"Post {sid} has no text content for report generation.")
+            return "Info: No text content provided for analysis."
+
+        prompt_text = PERPLEXITY_REPORT_PROMPT.format(scraped_text=full_text)
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "deepseek-chat",
+            "messages": [{"role": "user", "content": prompt_text}],
+            "max_tokens": settings.report_max_tokens,
+            "temperature": settings.report_temperature,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.deepseek.com/chat/completions",
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    if response.status != 200:
+                        error_body = await response.text()
+                        logger.error(f"DeepSeek API call failed: {error_body}")
+                        return f"Error: DeepSeek API call failed with status {response.status}"
+                    data = await response.json()
+                    return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.error(f"DeepSeek API error for post {sid}: {e}")
+            return f"Error: Failed to generate DeepSeek report. Exception: {e}"

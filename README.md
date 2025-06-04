@@ -1,11 +1,11 @@
 # XReader
 
-XReader is an asynchronous CLI tool designed to scrape tweet data from a Nitter instance, generate detailed factual reports using AI models like Perplexity AI, and save the combined data for further analysis. This tool is ideal for researchers, fact-checkers, and anyone interested in analyzing social media content with enhanced metadata.
+XReader is an asynchronous CLI tool designed to scrape tweet data from a Nitter instance, generate detailed factual reports using AI models like Perplexity AI, OpenAI GPT, Anthropic Claude, or DeepSeek, and save the combined data for further analysis. This tool is ideal for researchers, fact-checkers, and anyone interested in analyzing social media content with enhanced metadata.
 
 ## Features
 
 - **Scraping**: Extracts tweet data including main posts and replies from a specified Nitter instance using Playwright and BeautifulSoup.
-- **Report Generation**: Generates detailed, factual reports about social media posts using AI models, with support for Perplexity AI API and potential for additional models.
+- **Report Generation**: Generates detailed, factual reports about social media posts using AI models. Built-in options include Perplexity AI, OpenAI GPT, Anthropic Claude, and DeepSeek.
 - **Post Enhancement**: Enriches scraped data with normalized dates, media flags, and image descriptions using a centralized data enhancement module.
 - **Data Normalization**: Standardizes data formats with ISO 8601 timestamps and consistent metadata structure.
 - **Data Management**: Saves scraped data, image descriptions, and generated metadata in a structured JSON format for easy access and reference.
@@ -32,11 +32,11 @@ XReader is an asynchronous CLI tool designed to scrape tweet data from a Nitter 
    ```
 
 3. **Set Up Environment Variables**:
-   Copy the `.env` template to `.env` and update it with your Perplexity API key:
+   Copy the `.env` template to `.env` and update it with your API keys (Perplexity, OpenAI, Anthropic, or DeepSeek):
    ```bash
    cp .env.example .env
    ```
-   Edit `.env` to replace placeholder values with your actual API keys for Perplexity and other configurations.
+   Edit `.env` to replace placeholder values with your actual API keys for any AI models you plan to use and other configurations.
 
 4. **Run the Tool**:
    You can now run XReader using:
@@ -85,7 +85,7 @@ For detailed usage examples, refer to [USAGE.md](USAGE.md).
 
 XReader can be configured via the `.env` file.
 
-- **`.env`**: Contains API keys for Perplexity, data directory paths, Nitter instance URL, and other configurations.
+- **`.env`**: Contains API keys for Perplexity, OpenAI, Anthropic, and DeepSeek along with data directory paths, Nitter instance URL, and other configurations.
 
 For a full list of configuration options, see [CONFIGURATION.md](CONFIGURATION.md).
 
@@ -99,7 +99,7 @@ Debug information, such as failed HTML parses, is saved in the `debug_output` di
 
 ## Troubleshooting
 
-- **API Key Issues**: Ensure your Perplexity API key is correctly set in the `.env` file. If you encounter authentication errors, verify the key's validity.
+- **API Key Issues**: Ensure the API keys for your chosen model (Perplexity, OpenAI, Anthropic, or DeepSeek) are correctly set in the `.env` file. If you encounter authentication errors, verify the keys' validity.
 - **Rate Limiting**: If you hit rate limits with the Perplexity API or Nitter instance, consider adjusting request frequency or adding delays between requests.
 - **Parsing Errors**: If posts fail to parse, check `debug_output` for saved HTML files to diagnose the issue. Ensure the Nitter instance is operational.
 - **Installation Problems**: Verify that all dependencies are installed correctly using `pip install -r requirements.txt`. Check for Python version compatibility.
