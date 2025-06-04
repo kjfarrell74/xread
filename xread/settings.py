@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # API Keys
     perplexity_api_key: Optional[str] = Field(os.getenv("PERPLEXITY_API_KEY", config.get("API Keys", "perplexity_api_key", fallback=None)))
     gemini_api_key: Optional[str] = Field(os.getenv("GEMINI_API_KEY", config.get("API Keys", "gemini_api_key", fallback=None)))
+    openai_api_key: Optional[str] = Field(os.getenv("OPENAI_API_KEY", config.get("API Keys", "openai_api_key", fallback=None)))
+    anthropic_api_key: Optional[str] = Field(os.getenv("ANTHROPIC_API_KEY", config.get("API Keys", "anthropic_api_key", fallback=None)))
+    deepseek_api_key: Optional[str] = Field(os.getenv("DEEPSEEK_API_KEY", config.get("API Keys", "deepseek_api_key", fallback=None)))
 
     class Config:
         env_file = ".env"

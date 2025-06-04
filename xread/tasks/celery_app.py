@@ -1,4 +1,7 @@
 from celery import Celery
+import asyncio
+import time
+
 from xread.pipeline import ScraperPipeline
 from xread.data_manager import AsyncDataManager
 
