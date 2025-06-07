@@ -140,7 +140,19 @@ class PerplexityModel(BaseAIModel):
             "text": prompt_text
         })
         for img in image_content:
-            if 'original_url' in img and img['original_url']:
+            # Prioritize base64 encoded data over URL
+            if 'source' in img and 'media_type' in img['source'] and 'data' in img['source']:
+                # Send base64 encoded image data directly
+                data_url = f"data:{img['source']['media_type']};base64,{img['source']['data']}"
+                multimodal_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": data_url
+                    }
+                })
+                logger.info(f"Added image with base64 data (mime type: {img['source']['media_type']})")
+            elif 'original_url' in img and img['original_url']:
+                # Fallback to URL if base64 data is not available
                 multimodal_content.append({
                     "type": "image_url",
                     "image_url": {
@@ -149,7 +161,7 @@ class PerplexityModel(BaseAIModel):
                 })
                 logger.info(f"Added image with direct URL: {img['original_url']}")
             else:
-                logger.warning(f"Skipping image without original URL: {img.get('original_url', 'N/A')}")
+                logger.warning(f"Skipping image without base64 data or original URL")
 
         user_message["content"] = multimodal_content
         messages = [user_message]  # Only user message for multimodal call
