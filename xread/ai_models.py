@@ -5,20 +5,22 @@ It defines a base class for AI models and specific implementations like Perplexi
 to support generating reports and analyses from scraped data.
 """
 
-import os
 import asyncio
 import base64
 import hashlib
 import mimetypes
-from typing import Optional, List, Dict, Any
+import os
 from abc import ABC, abstractmethod
 from datetime import timedelta
+from typing import Optional, List, Dict, Any
 
 import aiohttp
 
-from xread.settings import settings, logger
 from xread.constants import PERPLEXITY_REPORT_PROMPT, GEMINI_REPORT_PROMPT
+from xread.core.cache_decorator import cached, cache_medium_term
+from xread.core.image_optimizer import image_optimizer
 from xread.models import ScrapedData, Post
+from xread.settings import settings, logger
 
 
 class BaseAIModel(ABC):
@@ -94,7 +96,7 @@ class PerplexityModel(BaseAIModel):
         if image_content:
             try:
                 async def multimodal_call():
-                    return await self._generate_multimodal_report(
+                    return await self._make_multimodal_api_call(
                         prompt_text, image_content, user_message, payload, headers, sid
                     )
                 multimodal_result = await with_retry(retries=2, delay=2)(multimodal_call)()
@@ -112,15 +114,15 @@ class PerplexityModel(BaseAIModel):
 
         try:
             async def text_only_call():
-                return await self._generate_text_only_report(headers, payload, sid)
+                return await self._make_text_only_api_call(headers, payload, sid)
             return await with_retry(retries=2, delay=2)(text_only_call)()
         except (aiohttp.ClientError, asyncio.TimeoutError) as net_exc:
             logger.error(f"Network error in text-only Perplexity API call for post {sid}: {net_exc}")
             return f"Error: Network error in text-only Perplexity API call: {net_exc}"
         except Exception as e:
-            return await self._handle_perplexity_error(e, sid)
+            return await self._handle_api_error(e, sid)
     
-    async def _generate_multimodal_report(
+    async def _make_multimodal_api_call(
         self,
         prompt_text: str,
         image_content: list,
@@ -140,9 +142,17 @@ class PerplexityModel(BaseAIModel):
             "text": prompt_text
         })
         for img in image_content:
-            # Prioritize base64 encoded data over URL
-            if 'source' in img and 'media_type' in img['source'] and 'data' in img['source']:
-                # Send base64 encoded image data directly
+            # Always use direct URL if available, otherwise fall back to base64 data URI
+            if 'original_url' in img and img['original_url']:
+                multimodal_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": img['original_url']
+                    }
+                })
+                logger.info(f"Added image with direct URL: {img['original_url']}")
+            elif 'source' in img and 'media_type' in img['source'] and 'data' in img['source']:
+                # Only use base64 if no direct URL is available
                 data_url = f"data:{img['source']['media_type']};base64,{img['source']['data']}"
                 multimodal_content.append({
                     "type": "image_url",
@@ -151,15 +161,6 @@ class PerplexityModel(BaseAIModel):
                     }
                 })
                 logger.info(f"Added image with base64 data (mime type: {img['source']['media_type']})")
-            elif 'original_url' in img and img['original_url']:
-                # Fallback to URL if base64 data is not available
-                multimodal_content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": img['original_url']
-                    }
-                })
-                logger.info(f"Added image with direct URL: {img['original_url']}")
             else:
                 logger.warning(f"Skipping image without base64 data or original URL")
 
@@ -203,14 +204,16 @@ class PerplexityModel(BaseAIModel):
             logger.info(f"Falling back to text-only Perplexity API call for post {sid}")
             return None
 
-    async def _handle_perplexity_error(self, e: Exception, sid: str) -> Optional[str]:
+    async def _handle_api_error(self, e: Exception, sid: str) -> Optional[str]:
+        """Handle API errors with consistent logging and error messages."""
         logger.exception(f"Error in Perplexity API call for post {sid}: {e}")
         import traceback
         error_traceback = traceback.format_exc()
         logger.error(f"Traceback: {error_traceback}")
         return f"Error: Failed to generate Perplexity report. Exception: {e}. Check logs for details."
 
-    async def _generate_text_only_report(self, headers: Dict, payload: Dict, sid: str) -> Optional[str]:
+    async def _make_text_only_api_call(self, headers: Dict, payload: Dict, sid: str) -> Optional[str]:
+        """Make text-only API call to Perplexity."""
         logger.info(f"Sending text-only request to Perplexity API for post {sid}")
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -264,8 +267,9 @@ class PerplexityModel(BaseAIModel):
             
         return processed_images
 
+    @cache_medium_term
     async def _download_and_encode_images(self, post: Post, session: aiohttp.ClientSession) -> List[Dict[str, Any]]:
-        """Download images and encode them for use with Perplexity API.
+        """Download images and encode them for use with Perplexity API using optimized caching.
         
         Args:
             post (Post): The post containing images to process.
@@ -277,109 +281,79 @@ class PerplexityModel(BaseAIModel):
         image_data_list = []
 
         for img in post.images:
-            # Make sure we have a valid URL - sometimes Nitter URLs need modification
-            image_url = img.url
-            if "nitter.net/pic/" in image_url:
-                # Handle Nitter URLs which may need special processing
-                logger.info(f"Detected Nitter image URL: {image_url}")
-                # Some Nitter instances use this format
-                if "%2F" in image_url:
-                    # URL decode the path
-                    from urllib.parse import unquote
-                    decoded_url = unquote(image_url)
-                    logger.info(f"Decoded Nitter URL: {decoded_url}")
-                    image_url = decoded_url
-
-            logger.info(f"Downloading image: {image_url}")
+            # Use optimized image handling
+            image_url = self._normalize_image_url(img.url)
+            logger.info(f"Processing image: {image_url}")
 
             try:
-                async with asyncio.timeout(20):  # Increase timeout for image download
-                    # Try multiple ways to download the image
-                    try:
-                        async with session.get(image_url, allow_redirects=True) as resp:
-                            if resp.status != 200:
-                                logger.warning(f"Failed to download image {image_url}, status: {resp.status}, trying alternate methods...")
-                                # If this fails, we'll try other methods below
-                                raise aiohttp.ClientError(f"Failed with status {resp.status}")
+                # Use the image optimizer for downloading and caching
+                result = await image_optimizer.get_optimized_image(
+                    image_url, 
+                    max_size=10 * 1024 * 1024  # 10MB limit
+                )
+                
+                if not result:
+                    logger.warning(f"Failed to get optimized image: {image_url}")
+                    continue
+                    
+                content, mime_type = result
 
-                            content = await resp.read()
-                    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                        logger.warning(f"Primary download method failed: {e}, trying alternate method...")
-                        # Some Nitter images require a different approach
-                        # Try a direct media URL if possible
-                        if "nitter.net/pic/orig/media" in image_url:
-                            # Try to extract the media path and construct a direct URL
-                            import re
-                            media_match = re.search(r'media%2F([^\.]+\.[^\.]+)', image_url)
-                            if media_match:
-                                media_id = media_match.group(1)
-                                alternate_url = f"https://pbs.twimg.com/media/{media_id}"
-                                logger.info(f"Trying alternate URL: {alternate_url}")
+                # Encode the image in base64
+                base64_encoded = base64.b64encode(content).decode('utf-8')
 
-                                async with session.get(alternate_url, allow_redirects=True) as alt_resp:
-                                    if alt_resp.status != 200:
-                                        logger.warning(f"Alternate download failed: {alternate_url}, status: {alt_resp.status}")
-                                        continue
+                # Generate direct Twitter URL if possible
+                original_url = self._convert_to_twitter_url(image_url)
 
-                                    content = await alt_resp.read()
-                            else:
-                                logger.warning(f"Could not extract media ID from URL: {image_url}")
-                                continue
-                        else:
-                            logger.warning(f"No alternate method available for {image_url}")
-                            continue
+                # Add to list with the format we need for later conversion
+                image_data_list.append({
+                    "source": {
+                        "media_type": mime_type,
+                        "data": base64_encoded
+                    },
+                    "original_url": original_url or image_url
+                })
 
-                    # Skip if image is too large (10MB limit)
-                    if len(content) > 10 * 1024 * 1024:
-                        logger.warning(f"Image {image_url} too large (> 10MB), skipping")
-                        continue
+                logger.info(f"Successfully processed image {img.url}")
 
-                    # Determine the mime type
-                    mime_type, _ = mimetypes.guess_type(img.url)
-                    mime_type = mime_type if mime_type and mime_type.startswith('image/') else "image/jpeg"
-
-                    # Encode the image in base64
-                    base64_encoded = base64.b64encode(content).decode('utf-8')
-
-                    # Since we're having issues with base64 encoding, let's try to convert
-                    # Nitter URLs to direct Twitter URLs that Perplexity might be able to access
-                    original_url = None
-                    if "nitter.net/pic/orig/media" in image_url:
-                        # Extract media ID and create direct Twitter URL
-                        import re
-                        media_match = re.search(r'media%2F([^\.]+\.[^\.]+)', image_url) or re.search(r'media/([^\.]+\.[^\.]+)', image_url)
-                        if media_match:
-                            media_id = media_match.group(1)
-                            # Use direct Twitter media URL
-                            original_url = f"https://pbs.twimg.com/media/{media_id}"
-                            logger.info(f"Converted to Twitter media URL: {original_url}")
-
-                    # Add to list with the format we need for later conversion
-                    image_data_list.append({
-                        "source": {
-                            "media_type": mime_type,
-                            "data": base64_encoded
-                        },
-                        "original_url": original_url or image_url  # Store original or converted URL
-                    })
-
-                    logger.info(f"Successfully processed image {img.url}")
-
-                    # Increased limit from 2 to 5 images per post for more comprehensive analysis
-                    if len(image_data_list) >= 5:
-                        break
+                # Limit to 5 images per post for comprehensive analysis
+                if len(image_data_list) >= 5:
+                    break
 
             except Exception as e:
                 logger.warning(f"Error processing image {img.url}: {e}")
 
         return image_data_list
+    
+    def _normalize_image_url(self, image_url: str) -> str:
+        """Normalize Nitter image URLs for better processing."""
+        if "nitter.net/pic/" in image_url and "%2F" in image_url:
+            from urllib.parse import unquote
+            decoded_url = unquote(image_url)
+            logger.debug(f"Decoded Nitter URL: {decoded_url}")
+            return decoded_url
+        return image_url
+    
+    def _convert_to_twitter_url(self, image_url: str) -> Optional[str]:
+        """Convert Nitter URLs to direct Twitter URLs when possible."""
+        if "nitter.net/pic/orig/media" in image_url:
+            import re
+            media_match = re.search(r'media%2F([^\.]+\.[^\.]+)', image_url) or re.search(r'media/([^\.]+\.[^\.]+)', image_url)
+            if media_match:
+                media_id = media_match.group(1)
+                twitter_url = f"https://pbs.twimg.com/media/{media_id}"
+                logger.debug(f"Converted to Twitter media URL: {twitter_url}")
+                return twitter_url
+        return None
 
 class CachedPerplexityModel(PerplexityModel):
+    """Cached version of PerplexityModel with Redis caching support."""
+    
     def __init__(self, cache, api_key: Optional[str] = None):
         super().__init__(api_key)
         self.cache = cache
     
     async def generate_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
+        """Generate report with caching support."""
         # Create cache key from text content hash
         content_hash = hashlib.md5(scraped_data.get_full_text().encode()).hexdigest()
         cache_key = self.cache.cache_key("perplexity_report", content_hash)
@@ -397,155 +371,6 @@ class CachedPerplexityModel(PerplexityModel):
             await self.cache.set(cache_key, report, ttl=timedelta(hours=24))
         
         return report
-
-    async def _process_images_perplexity(self, scraped_data: ScrapedData, sid: str) -> List[Dict[str, Any]]:
-        """Process images for use with Perplexity AI API.
-        
-        Args:
-            scraped_data (ScrapedData): The scraped data containing images.
-            sid (str): The status ID of the post for logging purposes.
-            
-        Returns:
-            List[Dict[str, Any]]: List of processed image data dictionaries.
-        """
-        # List to store base64-encoded images
-        processed_images = []
-        
-        logger.info(f"Processing images for post {sid} to include in Perplexity prompt...")
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                # Process images from the main post
-                main_post_images = await self._download_and_encode_images(scraped_data.main_post, session)
-                processed_images.extend(main_post_images)
-                
-                # Process images from all replies for comprehensive analysis
-                for reply in scraped_data.replies:
-                    reply_images = await self._download_and_encode_images(reply, session)
-                    processed_images.extend(reply_images)
-
-                    # Limit total number of images to avoid making prompt too large, but increase the limit
-                    if len(processed_images) >= 10:  # Increased from 4 to 10 for more comprehensive image analysis
-                        logger.info(f"Reached maximum number of images for Perplexity (10). Skipping remaining images.")
-                        break
-            
-            logger.info(f"Processed {len(processed_images)} images for Perplexity API")
-        except Exception as e:
-            logger.error(f"Error processing images for Perplexity: {e}")
-            logger.info("Proceeding with text content only for Perplexity report generation.")
-            processed_images = []
-            
-        return processed_images
-
-    async def _download_and_encode_images(self, post: Post, session: aiohttp.ClientSession) -> List[Dict[str, Any]]:
-        """Download images and encode them for use with Perplexity API.
-        
-        Args:
-            post (Post): The post containing images to process.
-            session (aiohttp.ClientSession): The HTTP session for downloading images.
-            
-        Returns:
-            List[Dict[str, Any]]: List of dictionaries containing encoded image data.
-        """
-        image_data_list = []
-
-        for img in post.images:
-            # Make sure we have a valid URL - sometimes Nitter URLs need modification
-            image_url = img.url
-            if "nitter.net/pic/" in image_url:
-                # Handle Nitter URLs which may need special processing
-                logger.info(f"Detected Nitter image URL: {image_url}")
-                # Some Nitter instances use this format
-                if "%2F" in image_url:
-                    # URL decode the path
-                    from urllib.parse import unquote
-                    decoded_url = unquote(image_url)
-                    logger.info(f"Decoded Nitter URL: {decoded_url}")
-                    image_url = decoded_url
-
-            logger.info(f"Downloading image: {image_url}")
-
-            try:
-                async with asyncio.timeout(20):  # Increase timeout for image download
-                    # Try multiple ways to download the image
-                    try:
-                        async with session.get(image_url, allow_redirects=True) as resp:
-                            if resp.status != 200:
-                                logger.warning(f"Failed to download image {image_url}, status: {resp.status}, trying alternate methods...")
-                                # If this fails, we'll try other methods below
-                                raise aiohttp.ClientError(f"Failed with status {resp.status}")
-
-                            content = await resp.read()
-                    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                        logger.warning(f"Primary download method failed: {e}, trying alternate method...")
-                        # Some Nitter images require a different approach
-                        # Try a direct media URL if possible
-                        if "nitter.net/pic/orig/media" in image_url:
-                            # Try to extract the media path and construct a direct URL
-                            import re
-                            media_match = re.search(r'media%2F([^\.]+\.[^\.]+)', image_url)
-                            if media_match:
-                                media_id = media_match.group(1)
-                                alternate_url = f"https://pbs.twimg.com/media/{media_id}"
-                                logger.info(f"Trying alternate URL: {alternate_url}")
-
-                                async with session.get(alternate_url, allow_redirects=True) as alt_resp:
-                                    if alt_resp.status != 200:
-                                        logger.warning(f"Alternate download failed: {alternate_url}, status: {alt_resp.status}")
-                                        continue
-
-                                    content = await alt_resp.read()
-                            else:
-                                logger.warning(f"Could not extract media ID from URL: {image_url}")
-                                continue
-                        else:
-                            logger.warning(f"No alternate method available for {image_url}")
-                            continue
-
-                    # Skip if image is too large (10MB limit)
-                    if len(content) > 10 * 1024 * 1024:
-                        logger.warning(f"Image {image_url} too large (> 10MB), skipping")
-                        continue
-
-                    # Determine the mime type
-                    mime_type, _ = mimetypes.guess_type(img.url)
-                    mime_type = mime_type if mime_type and mime_type.startswith('image/') else "image/jpeg"
-
-                    # Encode the image in base64
-                    base64_encoded = base64.b64encode(content).decode('utf-8')
-
-                    # Since we're having issues with base64 encoding, let's try to convert
-                    # Nitter URLs to direct Twitter URLs that Perplexity might be able to access
-                    original_url = None
-                    if "nitter.net/pic/orig/media" in image_url:
-                        # Extract media ID and create direct Twitter URL
-                        import re
-                        media_match = re.search(r'media%2F([^\.]+\.[^\.]+)', image_url) or re.search(r'media/([^\.]+\.[^\.]+)', image_url)
-                        if media_match:
-                            media_id = media_match.group(1)
-                            # Use direct Twitter media URL
-                            original_url = f"https://pbs.twimg.com/media/{media_id}"
-                            logger.info(f"Converted to Twitter media URL: {original_url}")
-
-                    # Add to list with the format we need for later conversion
-                    image_data_list.append({
-                        "source": {
-                            "media_type": mime_type,
-                            "data": base64_encoded
-                        },
-                        "original_url": original_url or image_url  # Store original or converted URL
-                    })
-
-                    logger.info(f"Successfully processed image {img.url}")
-
-                    # Increased limit from 2 to 5 images per post for more comprehensive analysis
-                    if len(image_data_list) >= 5:
-                        break
-
-            except Exception as e:
-                logger.warning(f"Error processing image {img.url}: {e}")
-
-        return image_data_list
 
 
 class GeminiModel(BaseAIModel):
@@ -715,111 +540,6 @@ class GeminiModel(BaseAIModel):
         return processed_images
 
     async def _download_and_encode_images_gemini(self, post: Post, session: aiohttp.ClientSession) -> List[Dict[str, Any]]:
-        """Download images and encode them for use with Gemini API.
-        
-        Args:
-            post (Post): The post containing images to process.
-            session (aiohttp.ClientSession): The HTTP session for downloading images.
-            
-        Returns:
-            List[Dict[str, Any]]: List of dictionaries containing encoded image data.
-        """
-        image_data_list = []
-
-        for img in post.images:
-            # Make sure we have a valid URL - sometimes Nitter URLs need modification
-            image_url = img.url
-            if "nitter.net/pic/" in image_url:
-                # Handle Nitter URLs which may need special processing
-                logger.info(f"Detected Nitter image URL: {image_url}")
-                # Some Nitter instances use this format
-                if "%2F" in image_url:
-                    # URL decode the path
-                    from urllib.parse import unquote
-                    decoded_url = unquote(image_url)
-                    logger.info(f"Decoded Nitter URL: {decoded_url}")
-                    image_url = decoded_url
-
-            logger.info(f"Downloading image: {image_url}")
-
-            try:
-                async with asyncio.timeout(20):  # Increase timeout for image download
-                    # Try multiple ways to download the image
-                    try:
-                        async with session.get(image_url, allow_redirects=True) as resp:
-                            if resp.status != 200:
-                                logger.warning(f"Failed to download image {image_url}, status: {resp.status}, trying alternate methods...")
-                                # If this fails, we'll try other methods below
-                                raise aiohttp.ClientError(f"Failed with status {resp.status}")
-
-                            content = await resp.read()
-                    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                        logger.warning(f"Primary download method failed: {e}, trying alternate method...")
-                        # Some Nitter images require a different approach
-                        # Try a direct media URL if possible
-                        if "nitter.net/pic/orig/media" in image_url:
-                            # Try to extract the media path and construct a direct URL
-                            import re
-                            media_match = re.search(r'media%2F([^\.]+\.[^\.]+)', image_url)
-                            if media_match:
-                                media_id = media_match.group(1)
-                                alternate_url = f"https://pbs.twimg.com/media/{media_id}"
-                                logger.info(f"Trying alternate URL: {alternate_url}")
-
-                                async with session.get(alternate_url, allow_redirects=True) as alt_resp:
-                                    if alt_resp.status != 200:
-                                        logger.warning(f"Alternate download failed: {alternate_url}, status: {alt_resp.status}")
-                                        continue
-
-                                    content = await alt_resp.read()
-                            else:
-                                logger.warning(f"Could not extract media ID from URL: {image_url}")
-                                continue
-                        else:
-                            logger.warning(f"No alternate method available for {image_url}")
-                            continue
-
-                    # Skip if image is too large (10MB limit)
-                    if len(content) > 10 * 1024 * 1024:
-                        logger.warning(f"Image {image_url} too large (> 10MB), skipping")
-                        continue
-
-                    # Determine the mime type
-                    mime_type, _ = mimetypes.guess_type(img.url)
-                    mime_type = mime_type if mime_type and mime_type.startswith('image/') else "image/jpeg"
-
-                    # Encode the image in base64
-                    base64_encoded = base64.b64encode(content).decode('utf-8')
-
-                    # Since we're having issues with base64 encoding, let's try to convert
-                    # Nitter URLs to direct Twitter URLs that Gemini might be able to access
-                    original_url = None
-                    if "nitter.net/pic/orig/media" in image_url:
-                        # Extract media ID and create direct Twitter URL
-                        import re
-                        media_match = re.search(r'media%2F([^\.]+\.[^\.]+)', image_url) or re.search(r'media/([^\.]+\.[^\.]+)', image_url)
-                        if media_match:
-                            media_id = media_match.group(1)
-                            # Use direct Twitter media URL
-                            original_url = f"https://pbs.twimg.com/media/{media_id}"
-                            logger.info(f"Converted to Twitter media URL: {original_url}")
-
-                    # Add to list with the format we need for later conversion
-                    image_data_list.append({
-                        "source": {
-                            "media_type": mime_type,
-                            "data": base64_encoded
-                        },
-                        "original_url": original_url or image_url  # Store original or converted URL
-                    })
-
-                    logger.info(f"Successfully processed image {img.url}")
-
-                    # Increased limit from 2 to 5 images per post for more comprehensive analysis
-                    if len(image_data_list) >= 5:
-                        break
-
-            except Exception as e:
-                logger.warning(f"Error processing image {img.url}: {e}")
-
-        return image_data_list
+        """Download images and encode them for use with Gemini API."""
+        # Reuse the Perplexity image processing since the logic is identical
+        return await self._download_and_encode_images(post, session)

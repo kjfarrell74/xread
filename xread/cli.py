@@ -51,9 +51,9 @@ def scrape(
             # Placeholder for AI enhancement logic
             pass
         
-        if output_format.lower() == FileFormats.JSON_EXTENSION:
+        if output_format.lower() == "json" or output_format.lower() == FileFormats.JSON_EXTENSION:
             data_manager.save_as_json(result, output_file)
-        elif output_format.lower() == FileFormats.MARKDOWN.value:
+        elif output_format.lower() == "markdown":
             data_manager.save_as_markdown(result, output_file)
         else:
             logger.error(f"Unsupported output format: {output_format}")

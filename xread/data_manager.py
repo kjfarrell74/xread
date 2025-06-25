@@ -13,6 +13,7 @@ from xread.core.async_file import write_json_async
 from xread.settings import settings, logger
 from xread.models import ScrapedData, Post, Image, AuthorNote, UserProfile
 from xread.security_patches import SecurityValidator, SecureDataManager as SecureBaseDataManager
+from xread.exceptions import DatabaseError, ValidationError, InvalidStatusIDError
 
 class AsyncDataManager(SecureBaseDataManager):
     """Handles saving and loading scraped data to/from the database asynchronously with security features."""
@@ -258,93 +259,32 @@ class AsyncDataManager(SecureBaseDataManager):
     ) -> Optional[str]:
         """Save scraped data to the database and as JSON files with security validations."""
         if not self.conn:
-            logger.error("Database not connected. Cannot save.")
-            return None
+            raise DatabaseError("Database not connected. Cannot save data.")
 
-        sid = data.main_post.status_id
+        sid = self._extract_and_validate_sid(data)
         if not sid:
-            first_reply_sid = next((r.status_id for r in data.replies if r.status_id), None)
-            if first_reply_sid:
-                sid = first_reply_sid
-                logger.warning(f"Main post missing ID, using first reply ID: {sid}")
-            else:
-                logger.error("No status ID found. Skipping save.")
-                return None
-
+            return None
+            
         if sid in self.seen:
             logger.info(f"Post {sid} already saved. Skipping.")
             return None
 
-        # Validate status ID
-        if not SecurityValidator.validate_status_id(sid):
-            logger.error(f"Invalid status ID: {sid}")
-            return None
-
-        # Sanitize status ID for filename
         clean_sid = SecurityValidator.sanitize_filename(sid)
         cursor = await self.conn.cursor()
         try:
             scrape_date = datetime.now(timezone.utc).isoformat()
             images_json = json.dumps([img.__dict__ for img in data.main_post.images])
 
-            # Defensive serialization of topic_tags
-            topic_tags_value = data.main_post.topic_tags
-            try:
-                if isinstance(topic_tags_value, str):
-                    try:
-                        loaded = json.loads(topic_tags_value)
-                        topic_tags_serialized = json.dumps(loaded)
-                    except Exception:
-                        topic_tags_serialized = json.dumps([topic_tags_value])
-                else:
-                    topic_tags_serialized = json.dumps(topic_tags_value if topic_tags_value is not None else [])
-            except Exception as e:
-                logger.error(f"Error serializing topic_tags for post {sid}: {e}. Defaulting to empty list.")
-                topic_tags_serialized = json.dumps([])
+            topic_tags_serialized = self._serialize_topic_tags(data.main_post.topic_tags, sid)
 
-            logger.debug(f"Saving post {sid} with topic_tags type: {type(topic_tags_value)} and value: {topic_tags_value}")
+            logger.debug(f"Saving post {sid} with topic_tags type: {type(data.main_post.topic_tags)} and value: {data.main_post.topic_tags}")
 
-            # Insert into posts table with new columns
-            await cursor.execute(
-                """
-                INSERT INTO posts (
-                    status_id, author, username, text, date, permalink, images_json, 
-                    original_url, scrape_date, ai_report, likes, retweets, 
-                    replies_count, topic_tags, factual_context, source
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    clean_sid,
-                    data.main_post.user,
-                    data.main_post.username,
-                    data.main_post.text,
-                    data.main_post.date,
-                    data.main_post.permalink,
-                    images_json,
-                    original_url,
-                    scrape_date,
-                    self._ensure_scalar(ai_report),
-                    data.main_post.likes,
-                    data.main_post.retweets,
-                    data.main_post.replies_count,
-                    self._ensure_scalar(topic_tags_serialized),
-                    self._ensure_scalar(data.factual_context),
-                    self._ensure_scalar(data.source)
-                )
+            await self._insert_main_post(
+                cursor, clean_sid, data, original_url, scrape_date, 
+                ai_report, images_json, topic_tags_serialized
             )
 
-            for reply in data.replies:
-                reply_images_json = json.dumps([img.__dict__ for img in reply.images])
-                await cursor.execute("SELECT reply_db_id FROM replies WHERE permalink = ?", (reply.permalink,))
-                if await cursor.fetchone():
-                    logger.info(f"Reply with permalink {reply.permalink} already exists. Skipping insertion.")
-                    continue
-                reply_sid = SecurityValidator.sanitize_filename(reply.status_id) if reply.status_id else ""
-                await cursor.execute(
-                    "INSERT INTO replies (post_status_id, status_id, user, username, text, date, permalink, images_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (clean_sid, reply_sid, reply.user, reply.username, reply.text, reply.date,
-                     reply.permalink, reply_images_json)
-                )
+            await self._insert_replies(cursor, clean_sid, data.replies)
 
             await self.conn.commit()
             self.seen.add(sid)
@@ -365,14 +305,102 @@ class AsyncDataManager(SecureBaseDataManager):
         except aiosqlite.IntegrityError as e:
             logger.warning(f"Integrity error saving post {sid}: {e}")
             await self.conn.rollback()
-            return None
+            raise DatabaseError(f"Integrity constraint violation for post {sid}: {e}")
         except aiosqlite.Error as e:
-            logger.error(f"Error saving post {sid} to database: {e} - Type: {type(e)}, Args: {e.args}")
+            logger.error(f"Database error saving post {sid}: {e}")
             await self.conn.rollback()
-            return None
+            raise DatabaseError(f"Database operation failed for post {sid}: {e}")
         except IOError as e:
-            logger.error(f"Error saving post {sid} to JSON file: {e} - Type: {type(e)}, Args: {e.args}")
+            logger.error(f"File I/O error saving post {sid}: {e}")
+            # Return sid since database save was successful, only JSON file failed
             return sid
+
+    def _extract_and_validate_sid(self, data: ScrapedData) -> Optional[str]:
+        """Extract and validate status ID from scraped data."""
+        sid = data.main_post.status_id
+        if not sid:
+            first_reply_sid = next((r.status_id for r in data.replies if r.status_id), None)
+            if first_reply_sid:
+                sid = first_reply_sid
+                logger.warning(f"Main post missing ID, using first reply ID: {sid}")
+            else:
+                raise ValidationError("No status ID found in scraped data")
+
+        # Validate status ID
+        if not SecurityValidator.validate_status_id(sid):
+            raise InvalidStatusIDError(f"Invalid status ID format: {sid}")
+            
+        return sid
+    
+    def _serialize_topic_tags(self, topic_tags_value: Any, sid: str) -> str:
+        """Serialize topic tags with defensive handling."""
+        try:
+            if isinstance(topic_tags_value, str):
+                try:
+                    loaded = json.loads(topic_tags_value)
+                    return json.dumps(loaded)
+                except Exception:
+                    return json.dumps([topic_tags_value])
+            else:
+                return json.dumps(topic_tags_value if topic_tags_value is not None else [])
+        except Exception as e:
+            logger.error(f"Error serializing topic_tags for post {sid}: {e}. Defaulting to empty list.")
+            return json.dumps([])
+    
+    async def _insert_main_post(
+        self, 
+        cursor: aiosqlite.Cursor, 
+        clean_sid: str, 
+        data: ScrapedData, 
+        original_url: str, 
+        scrape_date: str, 
+        ai_report: Optional[str], 
+        images_json: str, 
+        topic_tags_serialized: str
+    ) -> None:
+        """Insert main post into database."""
+        await cursor.execute(
+            """
+            INSERT INTO posts (
+                status_id, author, username, text, date, permalink, images_json, 
+                original_url, scrape_date, ai_report, likes, retweets, 
+                replies_count, topic_tags, factual_context, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                clean_sid,
+                data.main_post.user,
+                data.main_post.username,
+                data.main_post.text,
+                data.main_post.date,
+                data.main_post.permalink,
+                images_json,
+                original_url,
+                scrape_date,
+                self._ensure_scalar(ai_report),
+                data.main_post.likes,
+                data.main_post.retweets,
+                data.main_post.replies_count,
+                self._ensure_scalar(topic_tags_serialized),
+                self._ensure_scalar(data.factual_context),
+                self._ensure_scalar(data.source)
+            )
+        )
+    
+    async def _insert_replies(self, cursor: aiosqlite.Cursor, clean_sid: str, replies: List[Post]) -> None:
+        """Insert replies into database."""
+        for reply in replies:
+            reply_images_json = json.dumps([img.__dict__ for img in reply.images])
+            await cursor.execute("SELECT reply_db_id FROM replies WHERE permalink = ?", (reply.permalink,))
+            if await cursor.fetchone():
+                logger.info(f"Reply with permalink {reply.permalink} already exists. Skipping insertion.")
+                continue
+            reply_sid = SecurityValidator.sanitize_filename(reply.status_id) if reply.status_id else ""
+            await cursor.execute(
+                "INSERT INTO replies (post_status_id, status_id, user, username, text, date, permalink, images_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (clean_sid, reply_sid, reply.user, reply.username, reply.text, reply.date,
+                 reply.permalink, reply_images_json)
+            )
 
     def _serialize_to_json(
         self,
@@ -570,6 +598,12 @@ class AsyncDataManager(SecureBaseDataManager):
             return False
         finally:
             await cursor.close()
+    
+    async def add_general_author_note(self, username: str, note_content: str) -> bool:
+        """Add or update a general note about an author."""
+        from xread.models import AuthorNote
+        note = AuthorNote(username=username, note_content=note_content)
+        return await self.save_author_note(note)
             
     async def close(self) -> None:
         """Close the database connection and clean up resources."""
@@ -587,3 +621,207 @@ class AsyncDataManager(SecureBaseDataManager):
             finally:
                 self.conn = None
                 self._closed = True
+
+    async def get_full_post_data(self, post_id: str) -> Optional[Dict[str, Any]]:
+        """Get full post data by ID from database, including replies and parsed JSON fields."""
+        if not self.conn:
+            logger.error("Database not connected.")
+            return None
+        
+        cursor = await self.conn.cursor()
+        try:
+            # Get main post
+            await cursor.execute("""
+                SELECT status_id, author, username, text, date, permalink, 
+                       images_json, original_url, scrape_date, ai_report,
+                       likes, retweets, replies_count, topic_tags, factual_context, source,
+                       suggested_search_terms, research_questions, perplexity_report, author_note
+                FROM posts WHERE status_id = ?
+            """, (post_id,))
+            
+            post_row = await cursor.fetchone()
+            if not post_row:
+                return None
+            
+            post_data = dict(post_row)
+            
+            # Parse JSON fields
+            for key in ['images_json', 'topic_tags']:
+                if post_data.get(key):
+                    try:
+                        post_data[key.replace('_json', '')] = json.loads(post_data[key])
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to decode JSON for {key} for post {post_id}. Setting to empty.")
+                        post_data[key.replace('_json', '')] = []
+                else:
+                    post_data[key.replace('_json', '')] = []
+            
+            # Ensure AI reports are treated as strings
+            if 'ai_report' in post_data and post_data['ai_report'] is not None:
+                if isinstance(post_data['ai_report'], (list, dict)):
+                    post_data['ai_report'] = json.dumps(post_data['ai_report'])
+                post_data['ai_report'] = str(post_data['ai_report'])
+            else:
+                post_data['ai_report'] = "" # Default to empty string if None
+
+            # Handle factual_context and source as potentially lists/strings
+            if 'factual_context' in post_data and post_data['factual_context'] is not None:
+                try:
+                    # Attempt to load as JSON list, fallback to single string
+                    post_data['factual_context'] = json.loads(post_data['factual_context'])
+                except (json.JSONDecodeError, TypeError):
+                    post_data['factual_context'] = [post_data['factual_context']]
+            else:
+                post_data['factual_context'] = []
+
+            if 'source' in post_data and post_data['source'] is not None and isinstance(post_data['source'], str):
+                pass # Already a string
+            else:
+                post_data['source'] = "" # Default to empty string if None or not string
+
+
+            # Get replies
+            await cursor.execute("""
+                SELECT reply_db_id, post_status_id, status_id, user, username, text, date, permalink, images_json
+                FROM replies WHERE post_status_id = ?
+                ORDER BY date ASC
+            """, (post_id,))
+            
+            reply_rows = await cursor.fetchall()
+            replies = []
+            for reply_row in reply_rows:
+                reply_data = dict(reply_row)
+                if reply_data.get('images_json'):
+                    try:
+                        reply_data['images'] = json.loads(reply_data['images_json'])
+                    except json.JSONDecodeError:
+                        reply_data['images'] = []
+                else:
+                    reply_data['images'] = []
+                replies.append(reply_data)
+            
+            post_data['replies'] = replies
+
+            # Clean up the original json string fields
+            post_data.pop('images_json', None)
+            post_data.pop('topic_tags', None) # Pop original topic_tags if needed, as it's now 'topic_tags'
+            post_data.pop('suggested_search_terms', None)
+            post_data.pop('research_questions', None)
+            post_data.pop('perplexity_report', None) # perplexity_report is aliased to ai_report
+
+            # Re-map main_post to 'main_post' key for compatibility with ScrapedData object creation later
+            # (assuming this method might be used to reconstruct a ScrapedData object)
+            main_post_reformatted = {
+                'status_id': post_data.get('status_id'),
+                'user': post_data.get('author'),
+                'username': post_data.get('username'),
+                'text': post_data.get('text'),
+                'date': post_data.get('date'),
+                'permalink': post_data.get('permalink'),
+                'images': post_data.get('images', []),
+                'likes': post_data.get('likes', 0),
+                'retweets': post_data.get('retweets', 0),
+                'replies_count': post_data.get('replies_count', 0),
+                'topic_tags': post_data.get('topic_tags', [])
+            }
+            
+            return {
+                'main_post': main_post_reformatted,
+                'replies': replies,
+                'factual_context': post_data.get('factual_context'),
+                'source': post_data.get('source'),
+                'ai_report': post_data.get('ai_report'),
+                'scrape_date': post_data.get('scrape_date'),
+                'original_url': post_data.get('original_url'),
+                'author_note': post_data.get('author_note')
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting post {post_id} from DB: {e}")
+            return None
+        finally:
+            await cursor.close()
+    
+    async def search_posts(self, query: str, author: Optional[str] = None, limit: int = 10, include_ai_reports: bool = False) -> List[Dict[str, Any]]:
+        """Search posts in database by content and/or author."""
+        if not self.conn:
+            logger.error("Database not connected.")
+            return []
+        
+        cursor = await self.conn.cursor()
+        try:
+            select_cols = "status_id, author, username, text, date, permalink"
+            if include_ai_reports:
+                select_cols += ", ai_report"
+
+            sql = f"""
+                SELECT {select_cols}
+                FROM posts 
+                WHERE text LIKE ? 
+            """
+            params = [f"%{query}%"]
+            
+            if author:
+                sql += " AND username LIKE ?"
+                params.append(f"%{author}%")
+            
+            sql += " ORDER BY scrape_date DESC LIMIT ?"
+            params.append(limit)
+            
+            await cursor.execute(sql, params)
+            rows = await cursor.fetchall()
+            
+            results = []
+            for row in rows:
+                post_data = dict(row)
+                if 'ai_report' in post_data and post_data['ai_report'] is not None:
+                    if isinstance(post_data['ai_report'], (list, dict)): # Ensure it's a string
+                         post_data['ai_report'] = json.dumps(post_data['ai_report'])
+                else:
+                    post_data['ai_report'] = "" # Default to empty string
+                results.append(post_data)
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error searching posts in DB: {e}")
+            return []
+        finally:
+            await cursor.close()
+    
+    async def get_recent_posts(self, limit: int = 20, include_ai_reports: bool = False) -> List[Dict[str, Any]]:
+        """Get recent posts from database."""
+        if not self.conn:
+            logger.error("Database not connected.")
+            return []
+        
+        cursor = await self.conn.cursor()
+        try:
+            select_cols = "status_id, author, username, text, date, permalink"
+            if include_ai_reports:
+                select_cols += ", ai_report"
+
+            await cursor.execute(f"""
+                SELECT {select_cols}
+                FROM posts 
+                ORDER BY scrape_date DESC 
+                LIMIT ?
+            """, (limit,))
+            
+            rows = await cursor.fetchall()
+            
+            results = []
+            for row in rows:
+                post_data = dict(row)
+                if 'ai_report' in post_data and post_data['ai_report'] is not None:
+                    if isinstance(post_data['ai_report'], (list, dict)): # Ensure it's a string
+                        post_data['ai_report'] = json.dumps(post_data['ai_report'])
+                else:
+                    post_data['ai_report'] = "" # Default to empty string
+                results.append(post_data)
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error getting recent posts from DB: {e}")
+            return []
+        finally:
+            await cursor.close()

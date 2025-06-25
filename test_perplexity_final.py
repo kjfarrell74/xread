@@ -15,53 +15,47 @@ if not os.getenv("PERPLEXITY_API_KEY"):
 
 from xread.pipeline import ScraperPipeline  # Import after setting environment variable
 
-class MockPost:
-    """Mock post object for testing."""
-    def __init__(self, text):
-        self.text = text
-        self.images = []
-
-class MockScrapedData:
-    """Mock scraped data for testing."""
-    def __init__(self, text):
-        self.main_post = MockPost(text)
-        self.replies = []
-    
-    def get_full_text(self):
-        """Return the main post text."""
-        return self.main_post.text
-
 async def main():
-    """Test the Perplexity API integration."""
-    # Create a ScraperPipeline instance
-    pipeline = ScraperPipeline()
-    
+    """Test the Perplexity API integration with a real tweet URL and image uploads."""
+    from xread.data_manager import AsyncDataManager
+    from xread.pipeline import ScraperPipeline
+
+    # The tweet URL to test
+    tweet_url = "https://x.com/JessePeltan/status/1931116506773135381"
+
+    # Create a ScraperPipeline instance with a data manager
+    data_manager = AsyncDataManager()
+    pipeline = ScraperPipeline(data_manager)
+
     # Initialize the pipeline components
-    await pipeline.data_manager.initialize()
-    
-    # Mock data
-    test_text = "Netflix's shares dropped by 20% after announcing subscriber losses for the first time in more than 10 years."
-    mock_data = MockScrapedData(test_text)
-    
-    # Test the Perplexity API
-    print("Testing Perplexity API integration...")
-    report = await pipeline._generate_perplexity_report(mock_data, "test123")
-    
+    await data_manager.initialize()
+    await pipeline.initialize_browser()
+
+    print(f"Scraping tweet: {tweet_url}")
+    normalized_url, sid = await pipeline._prepare_url(tweet_url)
+    html_content, scraped_data = await pipeline._fetch_and_parse(normalized_url, sid)
+    await pipeline.close_browser()
+
+    if not scraped_data:
+        print("Failed to scrape the tweet or parse its content.")
+        return False
+
+    print("Generating Perplexity report (with images if available)...")
+    report = await pipeline.ai_model.generate_report(scraped_data, sid)
+
     if report:
         print("\nPerplexity report generated successfully!")
         print("-" * 60)
-        print(report[:500] + "..." if len(report) > 500 else report)
+        print(report[:500] + ("..." if len(report) > 500 else ""))
         print("-" * 60)
-        
         # Save the result to a file
         os.makedirs("debug_output", exist_ok=True)
         with open(f"debug_output/perplexity_test_{datetime.now().strftime('%Y%m%d%H%M%S')}.json", "w") as f:
             json.dump({
                 "test_time": datetime.now().isoformat(),
-                "test_text": test_text,
+                "tweet_url": tweet_url,
                 "report": report
             }, f, indent=2)
-            
         print("Test completed successfully!")
         return True
     else:

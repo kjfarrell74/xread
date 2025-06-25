@@ -23,6 +23,10 @@ from xread.ai_models import PerplexityModel, GeminiModel
 from xread.browser import BrowserManager
 from xread.json_upgrader import upgrade_perplexity_json
 from xread.core.utils import play_ding
+from xread.exceptions import (
+    NetworkError, ParseError, InvalidURLError, DatabaseError, 
+    AIModelError, ValidationError
+)
 
 class ScraperPipeline:
     """Orchestrates scraping, processing, generating search terms, and saving data."""
@@ -32,7 +36,10 @@ class ScraperPipeline:
         self.browser_manager = BrowserManager()
         self._browser_ready = False
         # Dynamically select AI model based on settings
-        selected_model = str(settings.ai_model).lower()
+        selected_model = settings.ai_model
+        if not isinstance(selected_model, str):
+            selected_model = str(getattr(selected_model, 'value', selected_model))
+        selected_model = selected_model.lower()
         if selected_model == "gemini":
             self.ai_model = GeminiModel()
             logger.info("Using Gemini AI model for report generation.")
@@ -65,8 +72,8 @@ class ScraperPipeline:
         except Exception as e:
             logger.error(f"Could not save failed HTML to {fpath}: {e}")
 
-    async def _normalize_url_and_extract_sid(self, url: str) -> tuple[str, Optional[str]]:
-        """Normalize the URL and extract the status ID."""
+    def _normalize_and_extract_id(self, url: str) -> tuple[str, Optional[str]]:
+        """Normalize URL and extract status ID."""
         normalized_url = self.scraper.normalize_url(url)
         sid_match = re.search(settings.status_id_regex, normalized_url)
         sid = sid_match.group(1) if sid_match else None
@@ -75,7 +82,7 @@ class ScraperPipeline:
         return normalized_url, sid
 
     async def _prepare_url(self, url: str) -> tuple[str, Optional[str]]:
-        return await self._normalize_url_and_extract_sid(url)
+        return self._normalize_and_extract_id(url)
 
     def _extract_url_sid(self, url: str) -> Optional[str]:
         """
@@ -179,9 +186,23 @@ class ScraperPipeline:
                 return True
         return False
 
+    async def _process_images_for_ai(self, scraped_data: ScrapedData) -> ScrapedData:
+        """Process images in scraped data for AI analysis."""
+        # Extract image URLs and metadata
+        image_urls = []
+        if scraped_data.main_post.images:
+            image_urls.extend([img.url for img in scraped_data.main_post.images])
+        
+        for reply in scraped_data.replies:
+            if reply.images:
+                image_urls.extend([img.url for img in reply.images])
+        
+        # Process images if needed (placeholder for future enhancement)
+        return await self._extract_image_processing(scraped_data)
+
     async def _generate_ai_report(self, scraped_data: ScrapedData, sid: str) -> Optional[str]:
         """Generate a factual report using the selected AI model."""
-        processed_data = await self._extract_image_processing(scraped_data)
+        processed_data = await self._process_images_for_ai(scraped_data)
         return await self.ai_model.generate_report(processed_data, sid)
 
     async def _save_results(
@@ -235,7 +256,13 @@ class ScraperPipeline:
         html_content = None  # Initialize to handle cases where it's not defined
         scraped_data = None  # Initialize for error handling
         try:
-            normalized_url, sid = await self._prepare_url(url)
+            # URL preparation and validation
+            try:
+                normalized_url, sid = await self._prepare_url(url)
+            except InvalidURLError as e:
+                logger.error(f"URL validation failed for {url}: {e}")
+                typer.echo(f"Error: {e}", err=True)
+                return
 
             # Extract the status ID directly from the URL, which might be different from the main post ID
             url_sid = self._extract_url_sid(url)
@@ -244,19 +271,37 @@ class ScraperPipeline:
             if self._should_skip_post(sid, url_sid):
                 return
             
-            html_content, scraped_data = await self._fetch_and_parse(normalized_url, sid)
+            # Fetch and parse with specific error handling
+            try:
+                html_content, scraped_data = await self._fetch_and_parse(normalized_url, sid)
+            except NetworkError as e:
+                logger.error(f"Network error for {url}: {e}")
+                typer.echo(f"Network error: {e}", err=True)
+                return
+            except ParseError as e:
+                logger.error(f"Parse error for {url}: {e}")
+                typer.echo(f"Parse error: {e}", err=True)
+                return
+                
             if not scraped_data:
                 if html_content:
                     await self._save_failed_html(sid, html_content)
                 return
                 
             # Generate AI report with text and images using the selected model
-            ai_report = await self._generate_ai_report(scraped_data, sid)
-            if ai_report:
-                logger.info(f"Generated AI report for post {sid}")
-            else:
-                logger.warning(f"Failed to generate AI report for post {sid}")
-                ai_report = "Error: Failed to generate AI report."
+            try:
+                ai_report = await self._generate_ai_report(scraped_data, sid)
+                if ai_report:
+                    logger.info(f"Generated AI report for post {sid}")
+                else:
+                    logger.warning(f"Failed to generate AI report for post {sid}")
+                    ai_report = "Error: Failed to generate AI report."
+            except AIModelError as e:
+                logger.error(f"AI model error for post {sid}: {e}")
+                ai_report = f"Error: AI model failed - {e}"
+            except Exception as e:
+                logger.error(f"Unexpected error in AI report generation for post {sid}: {e}")
+                ai_report = f"Error: Unexpected failure in AI report generation - {e}"
 
             # Look up author profile and author note
             author_username = scraped_data.main_post.username
@@ -320,15 +365,23 @@ class ScraperPipeline:
                 scraped_data.author_note.note_content = upgraded_data.get("author_note")
 
             # Save results with upgraded data
-            await self._save_results(scraped_data, url, ai_report, sid, author_profile, url_sid)
-            # Play notification sound after successful scrape and save
-            play_ding()
+            try:
+                await self._save_results(scraped_data, url, ai_report, sid, author_profile, url_sid)
+                # Play notification sound after successful scrape and save
+                play_ding()
+            except DatabaseError as e:
+                logger.error(f"Database error saving post {sid}: {e}")
+                typer.echo(f"Database error: Failed to save post {sid}", err=True)
+            except Exception as e:
+                logger.error(f"Unexpected error saving post {sid}: {e}")
+                typer.echo(f"Error: Failed to save post {sid} - {e}", err=True)
         except Exception as e:
-            await self._handle_error(e, url, html_content, scraped_data, sid)
+            await self._handle_fetch_error(e, url, html_content, scraped_data, sid)
         finally:
             await self.close_browser()
 
-    async def _handle_error(self, e: Exception, url: str, html_content: str, scraped_data: ScrapedData, sid: str) -> None:
+    async def _handle_fetch_error(self, e: Exception, url: str, html_content: Optional[str], scraped_data: Optional[ScrapedData], sid: str) -> None:
+        """Handle various types of fetch and processing errors."""
         if isinstance(e, KeyboardInterrupt):
             logger.info("Received KeyboardInterrupt, closing browser...")
             await self.close_browser()

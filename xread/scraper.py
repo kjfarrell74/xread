@@ -1,15 +1,18 @@
 """Web scraping functionality for extracting tweet data from Nitter instances in xread."""
 
 import re
-from typing import Optional
+from typing import Optional, Dict, Set
 from urllib.parse import urljoin
-from bs4 import BeautifulSoup
-from playwright.async_api import Page
 
-from xread.settings import settings, logger
+import aiohttp
+from bs4 import BeautifulSoup
+from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
+
 from xread.constants import PAGE_READY_SELECTOR, TimeoutConstants, NA_PLACEHOLDER
-from xread.models import ScrapedData, Post, Image
 from xread.core.utils import with_retry
+from xread.exceptions import NetworkError, ParseError, InvalidURLError
+from xread.models import ScrapedData, Post, Image
+from xread.settings import settings, logger
 
 class NitterScraper:
     """Scrapes data from a Nitter instance using Playwright and BeautifulSoup."""
@@ -17,14 +20,18 @@ class NitterScraper:
         self.base_urls = [str(url).rstrip('/') for url in settings.nitter_instances]
         self.base_url = self.base_urls[0] if self.base_urls else str(settings.nitter_base_url).rstrip('/')
 
-    def normalize_url(self, url: str, base_url: str = None) -> str:
-        """Normalize user-provided URL to a Nitter URL."""
+    def _normalize_url_pattern(self, url: str) -> tuple[str, str]:
+        """Extract user and status ID from URL pattern."""
         url = url.strip()
         match = re.search(settings.full_url_regex, url, re.IGNORECASE)
         if match:
-            user, sid = match.groups()
-            return f"{base_url or self.base_url}/{user}/status/{sid}"
-        raise ValueError(f"Invalid URL format: {url}")
+            return match.groups()
+        raise InvalidURLError(f"Invalid URL format: {url}")
+
+    def normalize_url(self, url: str, base_url: str = None) -> str:
+        """Normalize user-provided URL to a Nitter URL."""
+        user, sid = self._normalize_url_pattern(url)
+        return f"{base_url or self.base_url}/{user}/status/{sid}"
 
     async def fetch_html(self, page: Page, url: str) -> Optional[str]:
         """Use Playwright to fetch page HTML content, trying multiple Nitter instances if necessary."""
@@ -60,9 +67,21 @@ class NitterScraper:
                 logger.info(f"Fetched HTML ({len(html_content)} bytes) from {normalized_url}")
                 self.base_url = base_url  # Update the primary base URL to the successful one
                 return html_content
-            except Exception as e:
+            except PlaywrightTimeoutError as e:
+                logger.error(f"Timeout error fetching {normalized_url}: {e}")
                 await self._handle_fetch_error(e, normalized_url, page)
                 continue
+            except aiohttp.ClientError as e:
+                logger.error(f"Client error fetching {normalized_url}: {e}")
+                await self._handle_fetch_error(e, normalized_url, page)
+                continue
+            except Exception as e:
+                logger.error(f"Unexpected error fetching {normalized_url}: {e}")
+                await self._handle_fetch_error(e, normalized_url, page)
+                continue
+        
+        logger.error(f"All Nitter instances failed for {original_url}")
+        raise NetworkError(f"All Nitter instances failed for {original_url}")
 
     def _is_error_content(self, html_content: str) -> bool:
         """
@@ -74,6 +93,7 @@ class NitterScraper:
         )
 
     async def _handle_fetch_error(self, e: Exception, normalized_url: str, page: Page) -> None:
+        """Handle errors during HTML fetching."""
         logger.error(f"Error fetching {normalized_url}: {e}")
         try:
             partial_content = await page.content()
@@ -83,8 +103,6 @@ class NitterScraper:
                 logger.debug(f"No partial content available for {normalized_url}")
         except Exception as partial_e:
             logger.debug(f"Failed to capture partial content for {normalized_url}: {partial_e}")
-        logger.error(f"All Nitter instances failed for {original_url}")
-        return None
 
     def parse_html(self, html: str) -> Optional[ScrapedData]:
         """Parse HTML content and extract main post and replies."""
@@ -119,6 +137,7 @@ class NitterScraper:
         return ScrapedData(main_post=main_post, replies=replies)
 
     def _validate_content(self, soup: BeautifulSoup) -> bool:
+        """Validate that the content doesn't contain error messages."""
         error_text = soup.find(
             string=re.compile("Tweet not found|Instance has been rate limited|User not found", re.IGNORECASE)
         )
